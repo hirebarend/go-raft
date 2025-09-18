@@ -37,6 +37,23 @@ func main() {
 		c.JSON(200, gin.H{"message": "pong"})
 	})
 
+	r.POST("/append-entries", func(c *gin.Context) {
+		var request internal.AppendEntriesRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
+			return
+		}
+
+		term, success := raft.HandleAppendEntries(
+			request.Term, request.LeaderId, request.PrevLogIndex, request.PrevLogTerm, request.Entries, request.LeaderCommit,
+		)
+
+		c.JSON(http.StatusOK, internal.AppendEntriesResponse{
+			Term:    term,
+			Success: success,
+		})
+	})
+
 	r.POST("/request-vote", func(c *gin.Context) {
 		var request internal.RequestVoteRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -46,7 +63,7 @@ func main() {
 
 		term, granted := raft.HandleRequestVote(
 			request.Term,
-			&request.CandidateID,
+			request.CandidateID,
 			request.LastLogIndex,
 			request.LastLogTerm,
 		)

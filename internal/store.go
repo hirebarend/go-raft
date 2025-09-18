@@ -5,7 +5,7 @@ type Store struct {
 	currentTerm uint64
 
 	// persistent
-	votedFor *string
+	votedFor string
 
 	// persistent
 	log *Log
@@ -26,7 +26,7 @@ type Store struct {
 func NewStore(log *Log) *Store {
 	return &Store{
 		currentTerm: 0,
-		votedFor:    nil,
+		votedFor:    "",
 		log:         log,
 		commitIndex: 0,
 		lastApplied: 0,
@@ -45,22 +45,10 @@ func (s *Store) SetCurrentTerm(v uint64) uint64 {
 	return s.currentTerm
 }
 
-func (s *Store) GetVotedFor() *string {
+func (s *Store) GetVotedFor() string {
 	return s.votedFor
 }
 
-func (s *Store) SetVotedFor(votedFor *string) {
+func (s *Store) SetVotedFor(votedFor string) {
 	s.votedFor = votedFor
-}
-
-func (s *Store) GetLastLogEntry() *LogEntry {
-	return nil
-}
-
-func (s *Store) GetLogEntry(index uint64) *LogEntry {
-	return nil
-}
-
-func (s *Store) GetLogEntryTerm(index uint64) (uint64, bool) {
-	return 0, true
 }
