@@ -1,9 +1,9 @@
 package internal
 
 type LogEntry struct {
-	Index int64
+	Index uint64
 
-	Term int64
+	Term uint64
 }
 
 type Log struct {

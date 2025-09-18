@@ -2,7 +2,7 @@ package internal
 
 type Store struct {
 	// persistent
-	currentTerm int64
+	currentTerm uint64
 
 	// persistent
 	votedFor *string
@@ -11,16 +11,16 @@ type Store struct {
 	log *Log
 
 	// volatile
-	commitIndex int64
+	commitIndex uint64
 
 	// volatile
-	lastApplied int64
+	lastApplied uint64
 
 	// volatile (leader)
-	nextIndex map[string]int
+	nextIndex map[string]uint64
 
 	// volatile (leader)
-	matchIndex map[string]int
+	matchIndex map[string]uint64
 }
 
 func NewStore() *Store {
@@ -35,11 +35,11 @@ func NewStore() *Store {
 	}
 }
 
-func (s *Store) GetCurrentTerm() int64 {
+func (s *Store) GetCurrentTerm() uint64 {
 	return s.currentTerm
 }
 
-func (s *Store) SetCurrentTerm(v int64) int64 {
+func (s *Store) SetCurrentTerm(v uint64) uint64 {
 	s.currentTerm = v
 
 	return s.currentTerm

@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/hirebarend/raft-go/internal"
 )
 
 func main() {
@@ -18,12 +21,15 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	nodes := flag.String("nodes", "", "Port number to run the service on")
-	port := flag.Int("port", 8080, "Port number to run the service on")
+	nodes := flag.String("nodes", "127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083", "Port number to run the service on")
+	port := flag.Int("port", 8081, "Port number to run the service on")
 
 	flag.Parse()
 
-	fmt.Println(nodes)
+	addr := fmt.Sprintf("127.0.0.1:%d", *port)
+
+	store := internal.NewStore()
+	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), store, &internal.Transport{})
 
 	r := gin.Default()
 
@@ -35,8 +41,20 @@ func main() {
 	defer stop()
 
 	go func() {
-		addr := fmt.Sprintf(":%d", *port)
+		ticker := time.NewTicker(1000 * time.Millisecond)
+		defer ticker.Stop()
 
+		for {
+			select {
+			case <-ticker.C:
+				raft.Tick()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
 		if err := r.Run(addr); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %s\n", err)
 		}
