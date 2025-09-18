@@ -23,11 +23,11 @@ type Store struct {
 	matchIndex map[string]uint64
 }
 
-func NewStore() *Store {
+func NewStore(log *Log) *Store {
 	return &Store{
 		currentTerm: 0,
 		votedFor:    nil,
-		log:         nil, // TODO:
+		log:         log,
 		commitIndex: 0,
 		lastApplied: 0,
 		nextIndex:   nil, // TODO:
@@ -55,4 +55,12 @@ func (s *Store) SetVotedFor(votedFor *string) {
 
 func (s *Store) GetLastLogEntry() *LogEntry {
 	return nil
+}
+
+func (s *Store) GetLogEntry(index uint64) *LogEntry {
+	return nil
+}
+
+func (s *Store) GetLogEntryTerm(index uint64) (uint64, bool) {
+	return 0, true
 }

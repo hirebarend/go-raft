@@ -7,29 +7,20 @@ import (
 )
 
 type Raft struct {
-	electionDeadline uint64
-
+	electionDeadline   uint64
 	electionTimeoutMin int
-
 	electionTimeoutMax int
-
-	id string
-
-	leaderId *string
-
-	mu sync.Mutex
-
-	nodes []string
-
-	rng *rand.Rand
-
-	role string
-
-	store *Store
-
-	ticks uint64
-
-	transport *Transport
+	heartbeatInterval  uint64
+	heartbeatDeadline  uint64
+	id                 string
+	leaderId           *string
+	mu                 sync.Mutex
+	nodes              []string
+	rng                *rand.Rand
+	role               string
+	store              *Store
+	ticks              uint64
+	transport          *Transport
 }
 
 func NewRaft(id string, nodes []string, store *Store, transport *Transport) *Raft {
@@ -37,6 +28,8 @@ func NewRaft(id string, nodes []string, store *Store, transport *Transport) *Raf
 		electionDeadline:   0,
 		electionTimeoutMin: 3,
 		electionTimeoutMax: 5,
+		heartbeatInterval:  2,
+		heartbeatDeadline:  0 + 2,
 		id:                 id,
 		leaderId:           nil,
 		nodes:              nodes,
@@ -64,10 +57,105 @@ func (r *Raft) Tick() {
 	}
 }
 
+func (r *Raft) HandleAppendEntries(
+	term uint64,
+	leaderId *string,
+	prevLogIndex uint64,
+	prevLogTerm uint64,
+	entries []LogEntry,
+	leaderCommit uint64,
+) (uint64, bool) {
+	currentTerm := r.store.GetCurrentTerm()
+
+	if term < currentTerm {
+		return currentTerm, false
+	}
+
+	if term > currentTerm {
+		currentTerm = r.store.SetCurrentTerm(term)
+
+		r.store.votedFor = nil
+
+		r.role = "follower"
+
+		r.resetElectionTimer()
+
+		r.leaderId = nil
+	}
+
+	if leaderId != nil {
+		r.leaderId = leaderId
+	}
+
+	if prevLogIndex > 0 {
+		termAtPrevLogIndex, ok := r.store.GetLogEntryTerm(prevLogIndex)
+
+		if !ok || termAtPrevLogIndex != prevLogTerm {
+			return currentTerm, false
+		}
+	}
+
+	var lastIndex = prevLogIndex
+	for i, e := range entries {
+		expected := int64(prevLogIndex) + 1 + int64(i)
+
+		if e.Index != uint64(expected) {
+			e.Index = uint64(expected)
+		}
+
+		if termAtIndex, ok := r.store.GetLogEntryTerm(e.Index); ok {
+			if termAtIndex != e.Term {
+				r.store.log.Truncate(e.Index)
+
+				r.store.log.Append(entries[i:])
+
+				lastIndex = entries[len(entries)-1].Index
+
+				goto COMMIT
+			}
+
+			lastIndex = e.Index
+
+			continue
+		} else {
+			r.store.log.Append(entries[i:])
+
+			lastIndex = entries[len(entries)-1].Index
+
+			goto COMMIT
+		}
+	}
+
+COMMIT:
+	if lastIndex == 0 {
+		if lastLogEntry := r.store.GetLastLogEntry(); lastLogEntry != nil {
+			lastIndex = lastLogEntry.Index
+		}
+	}
+
+	if leaderCommit > r.store.commitIndex {
+		newCommit := leaderCommit
+
+		if newCommit > lastIndex {
+			newCommit = lastIndex
+		}
+
+		if newCommit > r.store.commitIndex {
+			r.store.commitIndex = newCommit
+			// if r.applyCond != nil {
+			// 	r.applyCond.Signal()
+			// }
+		}
+	}
+
+	r.resetElectionTimer()
+
+	return currentTerm, true
+}
+
 func (r *Raft) HandleRequestVote(term uint64, candidateId *string, lastLogIndex uint64, lastLogTerm uint64) (uint64, bool) {
 	currentTerm := r.store.GetCurrentTerm()
 
-	// Reply false if term < currentTerm (§5.1)
 	if term < currentTerm {
 		return currentTerm, false
 	}
@@ -96,8 +184,6 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId *string, lastLogIndex 
 		myLastLogTerm = logEntry.Term
 	}
 
-	// If votedFor is null or candidateId, and candidate’s log is at
-	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	if r.store.votedFor != nil && *r.store.votedFor != *candidateId {
 		return currentTerm, false
 	}
@@ -119,49 +205,49 @@ func (r *Raft) convertToLeader() {
 	r.leaderId = &r.id
 
 	fmt.Println("I'm a leader now!")
+	fmt.Println(r.id)
 
-	// term := r.store.GetCurrentTerm()
+	term := r.store.GetCurrentTerm()
 
-	// 2) Initialize leader bookkeeping
-	// if r.nextIndex == nil { r.nextIndex = make(map[string]int64, len(r.peers)) }
-	// if r.matchIndex == nil { r.matchIndex = make(map[string]int64, len(r.peers)) }
+	if r.store.nextIndex == nil {
+		r.store.nextIndex = make(map[string]uint64, len(r.nodes))
+	}
 
-	// lastIdx := int64(0)
-	// if le := r.store.GetLastLogEntry(); le != nil {
-	//     lastIdx = le.Index
-	// }
+	if r.store.matchIndex == nil {
+		r.store.matchIndex = make(map[string]uint64, len(r.nodes))
+	}
 
-	// for _, p := range r.peers {
-	//     if p == r.id { continue }
-	//     r.nextIndex[p]  = lastIdx + 1 // next entry to send
-	//     r.matchIndex[p] = 0           // nothing known replicated on follower yet
-	// }
-	// // Leader’s own match/next reflect its log
-	// r.matchIndex[r.id] = lastIdx
-	// r.nextIndex[r.id]  = lastIdx + 1
+	lastLogIndex := uint64(0)
+	if lastLogEntry := r.store.GetLastLogEntry(); lastLogEntry != nil {
+		lastLogIndex = lastLogEntry.Index
+	}
 
-	// // 3) Append a no-op entry in the new term (Raft §5.2)
-	// //    This helps the leader commit an entry from its term, establishing authority.
-	// noop := LogEntry{
-	//     Index: lastIdx + 1,   // store.Append may fill this; adapt if so
-	//     Term:  term,
-	//     Data:  nil,           // or a known marker like []byte("noop")
-	// }
-	// if err := r.store.Append(noop); err == nil {
-	//     // Update our own indices to include the no-op we just appended
-	//     // (If your Append sets Index, re-read last entry instead)
-	//     if le := r.store.GetLastLogEntry(); le != nil {
-	//         r.matchIndex[r.id] = le.Index
-	//         r.nextIndex[r.id]  = le.Index + 1
-	//         lastIdx            = le.Index
-	//     }
-	// } else {
-	//     // If append fails, it’s safer to step down; but at minimum log it.
-	//     // r.logger.Printf("becomeLeader: failed to append noop: %v", err)
-	// }
+	for _, p := range r.nodes {
+		if p == r.id {
+			continue
+		}
+		r.store.nextIndex[p] = lastLogIndex + 1
+		r.store.matchIndex[p] = 0
+	}
 
-	// // 4) Reset heartbeat timer so we send heartbeats promptly under the tick model
-	// r.resetHeartbeatTimerLocked()
+	r.store.matchIndex[r.id] = lastLogIndex
+	r.store.nextIndex[r.id] = lastLogIndex + 1
+
+	logEntry := LogEntry{
+		Index: lastLogIndex + 1,
+		Term:  term,
+		// Data:  nil,
+	}
+
+	if err := r.store.log.Append([]LogEntry{logEntry}); err == nil {
+		if lastLogEntry := r.store.GetLastLogEntry(); lastLogEntry != nil {
+			r.store.matchIndex[r.id] = lastLogEntry.Index
+			r.store.nextIndex[r.id] = lastLogEntry.Index + 1
+			// lastLogIndex = lastLogEntry.Index
+		}
+	}
+
+	r.resetHeartbeatTimer()
 
 	// // 5) Send initial AppendEntries (heartbeats) to all followers
 	// for _, p := range r.peers {
@@ -176,6 +262,10 @@ func (r *Raft) convertToLeader() {
 
 func (r *Raft) resetElectionTimer() {
 	r.electionDeadline = r.ticks + uint64(r.electionTimeoutMin+r.rng.IntN(r.electionTimeoutMax-r.electionTimeoutMin+1))
+}
+
+func (r *Raft) resetHeartbeatTimer() {
+	r.heartbeatDeadline = r.ticks + r.heartbeatInterval
 }
 
 func (r *Raft) startElection() {

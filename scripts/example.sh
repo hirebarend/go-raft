@@ -23,8 +23,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 ./raft-go --port 8081 --nodes 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083 & pids+=($!)
-./raft-go --port 8082 --nodes 127.0.0.1:8082,127.0.0.1:8081,127.0.0.1:8083 & pids+=($!)
-./raft-go --port 8083 --nodes 127.0.0.1:8083,127.0.0.1:8081,127.0.0.1:8082 & pids+=($!)
+./raft-go --port 8082 --nodes 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083 & pids+=($!)
+./raft-go --port 8083 --nodes 127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083 & pids+=($!)
 
 echo "Cluster started. Press Ctrl-C to stop."
 

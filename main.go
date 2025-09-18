@@ -28,13 +28,33 @@ func main() {
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
-	store := internal.NewStore()
+	store := internal.NewStore(&internal.Log{})
 	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), store, &internal.Transport{})
 
 	r := gin.Default()
 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})
+	})
+
+	r.POST("/request-vote", func(c *gin.Context) {
+		var request internal.RequestVoteRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
+			return
+		}
+
+		term, granted := raft.HandleRequestVote(
+			request.Term,
+			&request.CandidateID,
+			request.LastLogIndex,
+			request.LastLogTerm,
+		)
+
+		c.JSON(http.StatusOK, internal.RequestVoteResponse{
+			Term:        term,
+			VoteGranted: granted,
+		})
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
