@@ -66,6 +66,7 @@ func (r *Raft) Tick() {
 	}
 }
 
+// REVIEWED
 func (r *Raft) HandleAppendEntries(
 	term uint64,
 	leaderId string,
@@ -82,6 +83,10 @@ func (r *Raft) HandleAppendEntries(
 
 	if term > currentTerm {
 		currentTerm = r.convertToFollower(term)
+	} else {
+		if r.role != "follower" {
+			r.role = "follower"
+		}
 	}
 
 	if leaderId != "" {
@@ -89,61 +94,50 @@ func (r *Raft) HandleAppendEntries(
 	}
 
 	if prevLogIndex > 0 {
-		termAtPrevLogIndex, ok := r.store.log.GetTerm(prevLogIndex)
+		if termAtPrevLogIndex, ok := r.store.log.GetTerm(prevLogIndex); !ok || termAtPrevLogIndex != prevLogTerm {
+			r.resetElectionTimer()
 
-		if !ok || termAtPrevLogIndex != prevLogTerm {
 			return currentTerm, false
 		}
 	}
 
-	var lastIndex = prevLogIndex
+	lastLogIndex := prevLogIndex
 
-	if entries == nil {
-		goto COMMIT
-	}
+	for i, entry := range entries {
+		idx := prevLogIndex + 1 + uint64(i)
 
-	for i, e := range entries {
-		expected := int64(prevLogIndex) + 1 + int64(i)
-
-		if e.Index != uint64(expected) {
-			e.Index = uint64(expected)
-		}
-
-		if termAtIndex, ok := r.store.log.GetTerm(e.Index); ok {
-			if termAtIndex != e.Term {
-				r.store.log.Truncate(e.Index)
-
+		if termAtIdx, ok := r.store.log.GetTerm(idx); ok {
+			if termAtIdx != entry.Term {
+				r.store.log.Truncate(idx)
 				r.store.log.Append(entries[i:])
-
-				lastIndex = entries[len(entries)-1].Index
-
+				lastLogIndex = entries[len(entries)-1].Index
 				goto COMMIT
 			}
 
-			lastIndex = e.Index
-
+			lastLogIndex = idx
 			continue
 		} else {
 			r.store.log.Append(entries[i:])
-
-			lastIndex = entries[len(entries)-1].Index
-
+			lastLogIndex = entries[len(entries)-1].Index
 			goto COMMIT
 		}
 	}
 
 COMMIT:
-	if lastIndex == 0 {
-		lastIndex, _ = r.store.log.LastIndex()
+	if lastLogIndex == 0 {
+		if logIndex, ok := r.store.log.LastIndex(); ok {
+			lastLogIndex = logIndex
+		} else {
+			r.resetElectionTimer()
+			return currentTerm, false
+		}
 	}
 
 	if leaderCommit > r.store.commitIndex {
 		newCommit := leaderCommit
-
-		if newCommit > lastIndex {
-			newCommit = lastIndex
+		if newCommit > lastLogIndex {
+			newCommit = lastLogIndex
 		}
-
 		if newCommit > r.store.commitIndex {
 			r.store.commitIndex = newCommit
 			// if r.applyCond != nil {
@@ -241,16 +235,16 @@ func (r *Raft) convertToLeader() {
 	r.store.matchIndex[r.id] = lastLogIndex
 	r.store.nextIndex[r.id] = lastLogIndex + 1
 
-	logEntry := LogEntry{
+	entry := LogEntry{
 		Index: lastLogIndex + 1,
 		Term:  term,
 		// Data:  nil,
 	}
 
-	if err := r.store.log.Append([]LogEntry{logEntry}); err == nil {
-		if lastLogEntry, ok := r.store.log.Last(); ok {
-			r.store.matchIndex[r.id] = lastLogEntry.Index
-			r.store.nextIndex[r.id] = lastLogEntry.Index + 1
+	if err := r.store.log.Append([]LogEntry{entry}); err == nil {
+		if lastLog, ok := r.store.log.Last(); ok {
+			r.store.matchIndex[r.id] = lastLog.Index
+			r.store.nextIndex[r.id] = lastLog.Index + 1
 		}
 	}
 
