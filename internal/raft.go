@@ -3,7 +3,6 @@ package internal
 import (
 	"fmt"
 	"math/rand/v2"
-	"sync"
 )
 
 type Raft struct {
@@ -14,13 +13,13 @@ type Raft struct {
 	heartbeatDeadline  uint64
 	id                 string
 	leaderId           string
-	mu                 sync.Mutex
-	nodes              []string
-	rng                *rand.Rand
-	role               string
-	store              *Store
-	ticks              uint64
-	transport          *Transport
+	// mu                 sync.Mutex
+	nodes     []string
+	rng       *rand.Rand
+	role      string
+	store     *Store
+	ticks     uint64
+	transport *Transport
 }
 
 func NewRaft(id string, nodes []string, store *Store, transport *Transport) *Raft {
@@ -59,9 +58,11 @@ func (r *Raft) Tick() {
 		return
 
 	case "candidate", "follower":
+		fmt.Printf("ticks: %v, electionDeadline: %v\n", r.ticks, r.electionDeadline)
 		if r.ticks >= r.electionDeadline {
-			r.startElection()
+			r.startPreVote()
 		}
+
 		return
 	}
 }
@@ -147,6 +148,34 @@ COMMIT:
 	}
 
 	r.resetElectionTimer()
+
+	return currentTerm, true
+}
+
+// REVIEWED
+func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogIndex, lastLogTerm uint64) (uint64, bool) {
+	currentTerm := r.store.GetCurrentTerm()
+
+	if term < currentTerm {
+		return currentTerm, false
+	}
+
+	myLastLogIndex, ok := r.store.log.LastIndex()
+
+	if !ok {
+		return currentTerm, false
+	}
+
+	myLastLogTerm, ok := r.store.log.LastTerm()
+
+	if !ok {
+		return currentTerm, false
+	}
+
+	if !((lastLogTerm > myLastLogTerm) ||
+		(lastLogTerm == myLastLogTerm && lastLogIndex >= myLastLogIndex)) {
+		return currentTerm, false
+	}
 
 	return currentTerm, true
 }
@@ -270,6 +299,7 @@ func (r *Raft) startElection() {
 	r.role = "candidate"
 
 	numberOfVotes := 1
+
 	r.store.SetVotedFor(r.id)
 
 	r.resetElectionTimer()
@@ -285,9 +315,6 @@ func (r *Raft) startElection() {
 		go func() {
 			term, voteGranted := r.transport.RequestVote(node, currentTerm, r.id, lastLogIndex, lastLogTerm)
 
-			r.mu.Lock()
-			defer r.mu.Unlock()
-
 			if term > currentTerm {
 				r.convertToFollower(term)
 
@@ -299,6 +326,46 @@ func (r *Raft) startElection() {
 
 				if numberOfVotes > len(r.nodes)/2 {
 					r.convertToLeader()
+				}
+			}
+		}()
+	}
+}
+
+func (r *Raft) startPreVote() {
+	if r.role == "leader" {
+		return
+	}
+
+	currentTerm := r.store.GetCurrentTerm()
+
+	lastIdx, _ := r.store.log.LastIndex()
+
+	lastTerm, _ := r.store.log.LastTerm()
+
+	r.resetElectionTimer()
+
+	numberOfVotes := 1
+
+	for _, node := range r.nodes {
+		go func() {
+			term, voteGranted := r.transport.PreVote(node, currentTerm, r.id, lastIdx, lastTerm)
+
+			if term > r.store.GetCurrentTerm() {
+				r.convertToFollower(term)
+
+				return
+			}
+
+			if r.role == "leader" || currentTerm != r.store.GetCurrentTerm() {
+				return
+			}
+
+			if voteGranted {
+				numberOfVotes++
+
+				if numberOfVotes >= len(r.nodes)/2+1 {
+					r.startElection()
 				}
 			}
 		}()

@@ -81,6 +81,16 @@ func (t *Transport) AppendEntries(
 	return response.Term, response.Success
 }
 
+func (t *Transport) PreVote(
+	node string,
+	term uint64,
+	candidateId string,
+	lastLogIndex uint64,
+	lastLogTerm uint64,
+) (uint64, bool) {
+	return term, true
+}
+
 func (t *Transport) RequestVote(
 	node string,
 	term uint64,

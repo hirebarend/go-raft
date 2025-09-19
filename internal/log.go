@@ -6,43 +6,43 @@ type LogEntry struct {
 }
 
 type Log struct {
-	entries []LogEntry
+	logEntries []LogEntry
 }
 
-func (l *Log) Append(entries []LogEntry) error {
+func (l *Log) Append(logEntries []LogEntry) error {
 	var lastIndex uint64
 
-	if len(l.entries) > 0 {
-		lastIndex = l.entries[len(l.entries)-1].Index
+	if len(l.logEntries) > 0 {
+		lastIndex = l.logEntries[len(l.logEntries)-1].Index
 	}
 
-	for i := range entries {
+	for i := range logEntries {
 		lastIndex++
 
-		entries[i].Index = lastIndex
+		logEntries[i].Index = lastIndex
 
-		l.entries = append(l.entries, entries[i])
+		l.logEntries = append(l.logEntries, logEntries[i])
 	}
 
 	return nil
 }
 
 func (l *Log) Get(index uint64) (LogEntry, bool) {
-	if len(l.entries) == 0 {
+	if len(l.logEntries) == 0 {
 		return LogEntry{}, false
 	}
 
-	lo, hi := 0, len(l.entries)-1
+	lo, hi := 0, len(l.logEntries)-1
 
 	for lo <= hi {
 		mid := (lo + hi) / 2
-		e := l.entries[mid]
+		logEntry := l.logEntries[mid]
 
-		if e.Index == index {
-			return e, true
+		if logEntry.Index == index {
+			return logEntry, true
 		}
 
-		if e.Index < index {
+		if logEntry.Index < index {
 			lo = mid + 1
 		} else {
 			hi = mid - 1
@@ -63,11 +63,11 @@ func (l *Log) GetTerm(index uint64) (uint64, bool) {
 }
 
 func (l *Log) Last() (LogEntry, bool) {
-	if len(l.entries) == 0 {
+	if len(l.logEntries) == 0 {
 		return LogEntry{}, false
 	}
 
-	return l.entries[len(l.entries)-1], true
+	return l.logEntries[len(l.logEntries)-1], true
 }
 
 func (l *Log) LastIndex() (uint64, bool) {
@@ -91,14 +91,14 @@ func (l *Log) LastTerm() (uint64, bool) {
 }
 
 func (l *Log) Truncate(index uint64) {
-	if len(l.entries) == 0 {
+	if len(l.logEntries) == 0 {
 		return
 	}
 
 	position := -1
 
-	for i, e := range l.entries {
-		if e.Index == index {
+	for i, logEntry := range l.logEntries {
+		if logEntry.Index == index {
 			position = i
 			break
 		}
@@ -108,5 +108,5 @@ func (l *Log) Truncate(index uint64) {
 		return
 	}
 
-	l.entries = l.entries[:position]
+	l.logEntries = l.logEntries[:position]
 }
