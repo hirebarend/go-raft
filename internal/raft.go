@@ -79,15 +79,7 @@ func (r *Raft) HandleAppendEntries(
 	}
 
 	if term > currentTerm {
-		currentTerm = r.store.SetCurrentTerm(term)
-
-		r.store.votedFor = ""
-
-		r.role = "follower"
-
-		r.resetElectionTimer()
-
-		r.leaderId = ""
+		currentTerm = r.convertToFollower(term)
 	}
 
 	if leaderId != "" {
@@ -171,15 +163,7 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogIndex u
 	}
 
 	if term > currentTerm {
-		currentTerm = r.store.SetCurrentTerm(term)
-
-		r.store.votedFor = ""
-
-		r.role = "follower"
-
-		r.resetElectionTimer()
-
-		r.leaderId = ""
+		currentTerm = r.convertToFollower(term)
 	}
 
 	myLastLogIndex, _ := r.store.log.LastIndex()
@@ -199,6 +183,24 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogIndex u
 	}
 
 	return currentTerm, false
+}
+
+func (r *Raft) convertToFollower(term uint64) uint64 {
+	currentTerm := r.store.GetCurrentTerm()
+
+	if term > currentTerm {
+		currentTerm = r.store.SetCurrentTerm(term)
+	}
+
+	r.store.votedFor = ""
+
+	r.role = "follower"
+
+	r.resetElectionTimer()
+
+	r.leaderId = ""
+
+	return currentTerm
 }
 
 func (r *Raft) convertToLeader() {
@@ -284,15 +286,7 @@ func (r *Raft) startElection() {
 			defer r.mu.Unlock()
 
 			if term > r.store.GetCurrentTerm() {
-				currentTerm = r.store.SetCurrentTerm(term)
-
-				r.store.votedFor = ""
-
-				r.role = "follower"
-
-				r.resetElectionTimer()
-
-				r.leaderId = ""
+				currentTerm = r.convertToFollower(term)
 
 				return
 			}
