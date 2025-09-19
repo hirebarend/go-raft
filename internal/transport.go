@@ -39,7 +39,7 @@ type RequestVoteResponse struct {
 }
 
 func (t *Transport) AppendEntries(
-	node *string,
+	node string,
 	term uint64,
 	leaderId string,
 	prevLogIndex uint64,
@@ -65,7 +65,7 @@ func (t *Transport) AppendEntries(
 		t.client = &http.Client{Timeout: 2 * time.Second}
 	}
 
-	url := fmt.Sprintf("http://%s/append-entries", *node)
+	url := fmt.Sprintf("http://%s/append-entries", node)
 
 	resp, err := t.client.Post(url, "application/json", bytes.NewBuffer(data))
 	if err != nil {
@@ -82,7 +82,7 @@ func (t *Transport) AppendEntries(
 }
 
 func (t *Transport) RequestVote(
-	node *string,
+	node string,
 	term uint64,
 	candidateId string,
 	lastLogIndex uint64,
@@ -104,7 +104,7 @@ func (t *Transport) RequestVote(
 		t.client = &http.Client{Timeout: 2 * time.Second}
 	}
 
-	url := fmt.Sprintf("http://%s/request-vote", *node)
+	url := fmt.Sprintf("http://%s/request-vote", node)
 
 	resp, err := t.client.Post(url, "application/json", bytes.NewBuffer(data))
 	if err != nil {

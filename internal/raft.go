@@ -45,23 +45,25 @@ func NewRaft(id string, nodes []string, store *Store, transport *Transport) *Raf
 	return &raft
 }
 
+// REVIEWED
 func (r *Raft) Tick() {
 	r.ticks++
 
-	if r.role != "leader" {
+	switch r.role {
+	case "leader":
+		if r.ticks >= r.heartbeatDeadline {
+			r.sendAppendEntriesToAllNodes()
+			r.resetHeartbeatTimer()
+		}
+
+		return
+
+	case "candidate", "follower":
 		if r.ticks >= r.electionDeadline {
 			r.startElection()
 		}
 		return
 	}
-
-	if r.ticks < r.heartbeatDeadline {
-		return
-	}
-
-	r.sendAppendEntriesToAllNodes()
-
-	r.resetHeartbeatTimer()
 }
 
 func (r *Raft) HandleAppendEntries(
@@ -155,6 +157,7 @@ COMMIT:
 	return currentTerm, true
 }
 
+// REVIEWED
 func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogIndex uint64, lastLogTerm uint64) (uint64, bool) {
 	currentTerm := r.store.GetCurrentTerm()
 
@@ -169,36 +172,41 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogIndex u
 	myLastLogIndex, _ := r.store.log.LastIndex()
 	myLastLogTerm, _ := r.store.log.LastTerm()
 
-	if r.store.votedFor != "" && r.store.votedFor != candidateId {
+	if r.store.GetVotedFor() != "" && r.store.GetVotedFor() != candidateId {
 		return currentTerm, false
 	}
 
-	if (lastLogTerm > myLastLogTerm) ||
-		(lastLogTerm == myLastLogTerm && lastLogIndex >= myLastLogIndex) {
-		r.store.SetVotedFor(candidateId)
-
-		r.resetElectionTimer()
-
-		return currentTerm, true
+	if !((lastLogTerm > myLastLogTerm) ||
+		(lastLogTerm == myLastLogTerm && lastLogIndex >= myLastLogIndex)) {
+		return currentTerm, false
 	}
 
-	return currentTerm, false
+	r.store.SetVotedFor(candidateId)
+
+	r.resetElectionTimer()
+
+	return currentTerm, true
 }
 
+// REVIEWED
 func (r *Raft) convertToFollower(term uint64) uint64 {
 	currentTerm := r.store.GetCurrentTerm()
+
+	if term < currentTerm {
+		return currentTerm
+	}
 
 	if term > currentTerm {
 		currentTerm = r.store.SetCurrentTerm(term)
 	}
 
-	r.store.votedFor = ""
+	r.store.SetVotedFor("")
 
 	r.role = "follower"
 
 	r.resetElectionTimer()
 
-	r.leaderId = ""
+	// r.leaderId = ""
 
 	return currentTerm
 }
@@ -262,6 +270,7 @@ func (r *Raft) resetHeartbeatTimer() {
 	r.heartbeatDeadline = r.ticks + r.heartbeatInterval
 }
 
+// REVIEWED
 func (r *Raft) startElection() {
 	currentTerm := r.store.SetCurrentTerm(r.store.GetCurrentTerm() + 1)
 	r.role = "candidate"
@@ -279,26 +288,26 @@ func (r *Raft) startElection() {
 			continue
 		}
 
-		go func(n string) {
-			term, voteGranted := r.transport.RequestVote(&n, currentTerm, r.id, lastLogIndex, lastLogTerm)
+		go func() {
+			term, voteGranted := r.transport.RequestVote(node, currentTerm, r.id, lastLogIndex, lastLogTerm)
 
 			r.mu.Lock()
 			defer r.mu.Unlock()
 
-			if term > r.store.GetCurrentTerm() {
-				currentTerm = r.convertToFollower(term)
+			if term > currentTerm {
+				r.convertToFollower(term)
 
 				return
 			}
 
-			if r.role == "candidate" && term == r.store.GetCurrentTerm() && voteGranted {
+			if r.role == "candidate" && term == currentTerm && voteGranted {
 				numberOfVotes++
 
 				if numberOfVotes > len(r.nodes)/2 {
 					r.convertToLeader()
 				}
 			}
-		}(node)
+		}()
 	}
 }
 
@@ -355,6 +364,6 @@ func (r *Raft) sendAppendEntriesToAllNodes() {
 			}
 		}
 
-		go r.transport.AppendEntries(&node, currentTerm, r.leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit)
+		go r.transport.AppendEntries(node, currentTerm, r.leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit)
 	}
 }
