@@ -26,6 +26,18 @@ type AppendEntriesResponse struct {
 	Success bool   `json:"success"`
 }
 
+type PreVoteRequest struct {
+	Term         uint64 `json:"term"`
+	CandidateID  string `json:"candidateId"`
+	LastLogIndex uint64 `json:"lastLogIndex"`
+	LastLogTerm  uint64 `json:"lastLogTerm"`
+}
+
+type PreVoteResponse struct {
+	Term        uint64 `json:"term"`
+	VoteGranted bool   `json:"voteGranted"`
+}
+
 type RequestVoteRequest struct {
 	Term         uint64 `json:"term"`
 	CandidateID  string `json:"candidateId"`
@@ -88,7 +100,36 @@ func (t *Transport) PreVote(
 	lastLogIndex uint64,
 	lastLogTerm uint64,
 ) (uint64, bool) {
-	return term, true
+	request := PreVoteRequest{
+		Term:         term,
+		CandidateID:  candidateId,
+		LastLogIndex: lastLogIndex,
+		LastLogTerm:  lastLogTerm,
+	}
+
+	data, err := json.Marshal(request)
+	if err != nil {
+		return term, false
+	}
+
+	if t.client == nil {
+		t.client = &http.Client{Timeout: 2 * time.Second}
+	}
+
+	url := fmt.Sprintf("http://%s/pre-vote", node)
+
+	resp, err := t.client.Post(url, "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return term, false
+	}
+	defer resp.Body.Close()
+
+	var response PreVoteResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return term, false
+	}
+
+	return response.Term, response.VoteGranted
 }
 
 func (t *Transport) RequestVote(

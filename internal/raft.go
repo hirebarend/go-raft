@@ -3,6 +3,7 @@ package internal
 import (
 	"fmt"
 	"math/rand/v2"
+	"time"
 )
 
 type Raft struct {
@@ -23,6 +24,8 @@ type Raft struct {
 }
 
 func NewRaft(id string, nodes []string, store *Store, transport *Transport) *Raft {
+	seed := uint64(time.Now().UnixNano())
+
 	raft := Raft{
 		electionDeadline:   0,
 		electionTimeoutMin: 10,
@@ -32,7 +35,7 @@ func NewRaft(id string, nodes []string, store *Store, transport *Transport) *Raf
 		id:                 id,
 		leaderId:           "",
 		nodes:              nodes,
-		rng:                rand.New(rand.NewPCG(42, 54)),
+		rng:                rand.New(rand.NewPCG(seed, seed>>1)),
 		role:               "candidate",
 		store:              store,
 		ticks:              0,
@@ -71,9 +74,9 @@ func (r *Raft) Tick() {
 func (r *Raft) HandleAppendEntries(
 	term uint64,
 	leaderId string,
-	prevLogIndex uint64,
-	prevLogTerm uint64,
-	entries []LogEntry,
+	prevLogEntryIndex uint64,
+	prevLogEntryTerm uint64,
+	logEntries []LogEntry,
 	leaderCommit uint64,
 ) (uint64, bool) {
 	currentTerm := r.store.GetCurrentTerm()
@@ -94,40 +97,40 @@ func (r *Raft) HandleAppendEntries(
 		r.leaderId = leaderId
 	}
 
-	if prevLogIndex > 0 {
-		if termAtPrevLogIndex, ok := r.store.log.GetTerm(prevLogIndex); !ok || termAtPrevLogIndex != prevLogTerm {
+	if prevLogEntryIndex > 0 {
+		if termAtPrevLogIndex, ok := r.store.log.GetTerm(prevLogEntryIndex); !ok || termAtPrevLogIndex != prevLogEntryTerm {
 			r.resetElectionTimer()
 
 			return currentTerm, false
 		}
 	}
 
-	lastLogIndex := prevLogIndex
+	lastLogEntryIndex := prevLogEntryIndex
 
-	for i, entry := range entries {
-		idx := prevLogIndex + 1 + uint64(i)
+	for i, entry := range logEntries {
+		idx := prevLogEntryIndex + 1 + uint64(i)
 
-		if termAtIdx, ok := r.store.log.GetTerm(idx); ok {
+		if termAtIdx, ok := r.store.log.GetTerm(idx); ok { // TODO
 			if termAtIdx != entry.Term {
 				r.store.log.Truncate(idx)
-				r.store.log.Append(entries[i:])
-				lastLogIndex = entries[len(entries)-1].Index
+				r.store.log.Append(logEntries[i:])
+				lastLogEntryIndex = logEntries[len(logEntries)-1].Index
 				goto COMMIT
 			}
 
-			lastLogIndex = idx
+			lastLogEntryIndex = idx
 			continue
 		} else {
-			r.store.log.Append(entries[i:])
-			lastLogIndex = entries[len(entries)-1].Index
+			r.store.log.Append(logEntries[i:])
+			lastLogEntryIndex = logEntries[len(logEntries)-1].Index
 			goto COMMIT
 		}
 	}
 
 COMMIT:
-	if lastLogIndex == 0 {
-		if logIndex, ok := r.store.log.LastIndex(); ok {
-			lastLogIndex = logIndex
+	if lastLogEntryIndex == 0 {
+		if logEntryIndex, ok := r.store.log.LastIndex(); ok {
+			lastLogEntryIndex = logEntryIndex
 		} else {
 			r.resetElectionTimer()
 			return currentTerm, false
@@ -136,8 +139,8 @@ COMMIT:
 
 	if leaderCommit > r.store.commitIndex {
 		newCommit := leaderCommit
-		if newCommit > lastLogIndex {
-			newCommit = lastLogIndex
+		if newCommit > lastLogEntryIndex {
+			newCommit = lastLogEntryIndex
 		}
 		if newCommit > r.store.commitIndex {
 			r.store.commitIndex = newCommit
@@ -153,27 +156,19 @@ COMMIT:
 }
 
 // REVIEWED
-func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogIndex, lastLogTerm uint64) (uint64, bool) {
+func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {
 	currentTerm := r.store.GetCurrentTerm()
 
 	if term < currentTerm {
 		return currentTerm, false
 	}
 
-	myLastLogIndex, ok := r.store.log.LastIndex()
+	myLastLogEntryIndex, _ := r.store.log.LastIndex()
 
-	if !ok {
-		return currentTerm, false
-	}
+	myLastLogEntryTerm, _ := r.store.log.LastTerm()
 
-	myLastLogTerm, ok := r.store.log.LastTerm()
-
-	if !ok {
-		return currentTerm, false
-	}
-
-	if !((lastLogTerm > myLastLogTerm) ||
-		(lastLogTerm == myLastLogTerm && lastLogIndex >= myLastLogIndex)) {
+	if !((lastLogEntryTerm > myLastLogEntryTerm) ||
+		(lastLogEntryTerm == myLastLogEntryTerm && lastLogEntryIndex >= myLastLogEntryIndex)) {
 		return currentTerm, false
 	}
 
@@ -181,7 +176,7 @@ func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogIndex, last
 }
 
 // REVIEWED
-func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogIndex uint64, lastLogTerm uint64) (uint64, bool) {
+func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool) {
 	currentTerm := r.store.GetCurrentTerm()
 
 	if term < currentTerm {
@@ -192,15 +187,15 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogIndex u
 		currentTerm = r.convertToFollower(term)
 	}
 
-	myLastLogIndex, _ := r.store.log.LastIndex()
-	myLastLogTerm, _ := r.store.log.LastTerm()
+	myLastLogEntryIndex, _ := r.store.log.LastIndex()
+	myLastLogEntryTerm, _ := r.store.log.LastTerm()
 
 	if r.store.GetVotedFor() != "" && r.store.GetVotedFor() != candidateId {
 		return currentTerm, false
 	}
 
-	if !((lastLogTerm > myLastLogTerm) ||
-		(lastLogTerm == myLastLogTerm && lastLogIndex >= myLastLogIndex)) {
+	if !((lastLogEntryTerm > myLastLogEntryTerm) ||
+		(lastLogEntryTerm == myLastLogEntryTerm && lastLogEntryIndex >= myLastLogEntryIndex)) {
 		return currentTerm, false
 	}
 
@@ -251,29 +246,29 @@ func (r *Raft) convertToLeader() {
 		r.store.matchIndex = make(map[string]uint64, len(r.nodes))
 	}
 
-	lastLogIndex, _ := r.store.log.LastIndex()
+	lastLogEntryIndex, _ := r.store.log.LastIndex()
 
 	for _, p := range r.nodes {
 		if p == r.id {
 			continue
 		}
-		r.store.nextIndex[p] = lastLogIndex + 1
+		r.store.nextIndex[p] = lastLogEntryIndex + 1
 		r.store.matchIndex[p] = 0
 	}
 
-	r.store.matchIndex[r.id] = lastLogIndex
-	r.store.nextIndex[r.id] = lastLogIndex + 1
+	r.store.matchIndex[r.id] = lastLogEntryIndex
+	r.store.nextIndex[r.id] = lastLogEntryIndex + 1
 
-	entry := LogEntry{
-		Index: lastLogIndex + 1,
+	logEntry := LogEntry{
+		Index: lastLogEntryIndex + 1,
 		Term:  term,
 		// Data:  nil,
 	}
 
-	if err := r.store.log.Append([]LogEntry{entry}); err == nil {
-		if lastLog, ok := r.store.log.Last(); ok {
-			r.store.matchIndex[r.id] = lastLog.Index
-			r.store.nextIndex[r.id] = lastLog.Index + 1
+	if err := r.store.log.Append([]LogEntry{logEntry}); err == nil {
+		if lastLogEntry, ok := r.store.log.Last(); ok {
+			r.store.matchIndex[r.id] = lastLogEntry.Index
+			r.store.nextIndex[r.id] = lastLogEntry.Index + 1
 		}
 	}
 
@@ -304,8 +299,8 @@ func (r *Raft) startElection() {
 
 	r.resetElectionTimer()
 
-	lastLogIndex, _ := r.store.log.LastIndex()
-	lastLogTerm, _ := r.store.log.LastTerm()
+	lastLogEntryIndex, _ := r.store.log.LastIndex()
+	lastLogEntryTerm, _ := r.store.log.LastTerm()
 
 	for _, node := range r.nodes {
 		if node == r.id {
@@ -313,7 +308,7 @@ func (r *Raft) startElection() {
 		}
 
 		go func() {
-			term, voteGranted := r.transport.RequestVote(node, currentTerm, r.id, lastLogIndex, lastLogTerm)
+			term, voteGranted := r.transport.RequestVote(node, currentTerm, r.id, lastLogEntryIndex, lastLogEntryTerm)
 
 			if term > currentTerm {
 				r.convertToFollower(term)
@@ -339,9 +334,9 @@ func (r *Raft) startPreVote() {
 
 	currentTerm := r.store.GetCurrentTerm()
 
-	lastIdx, _ := r.store.log.LastIndex()
+	lastLogEntryIndex, _ := r.store.log.LastIndex()
 
-	lastTerm, _ := r.store.log.LastTerm()
+	lastLogEntryTerm, _ := r.store.log.LastTerm()
 
 	r.resetElectionTimer()
 
@@ -349,7 +344,7 @@ func (r *Raft) startPreVote() {
 
 	for _, node := range r.nodes {
 		go func() {
-			term, voteGranted := r.transport.PreVote(node, currentTerm, r.id, lastIdx, lastTerm)
+			term, voteGranted := r.transport.PreVote(node, currentTerm, r.id, lastLogEntryIndex, lastLogEntryTerm)
 
 			if term > r.store.GetCurrentTerm() {
 				r.convertToFollower(term)
@@ -375,7 +370,7 @@ func (r *Raft) startPreVote() {
 func (r *Raft) sendAppendEntriesToAllNodes() {
 	currentTerm := r.store.GetCurrentTerm()
 
-	lastLogIndex, _ := r.store.log.LastIndex()
+	lastLogEntryIndex, _ := r.store.log.LastIndex()
 	leaderCommit := r.store.commitIndex
 
 	for _, node := range r.nodes {
@@ -386,28 +381,28 @@ func (r *Raft) sendAppendEntriesToAllNodes() {
 		next := r.store.nextIndex[node]
 
 		if next == 0 {
-			next = lastLogIndex + 1
+			next = lastLogEntryIndex + 1
 		}
 
-		var prevLogIndex uint64
+		var prevLogEntryIndex uint64
 
 		if next > 0 {
-			prevLogIndex = next - 1
+			prevLogEntryIndex = next - 1
 		}
 
 		var prevLogTerm uint64
 
-		if prevLogIndex > 0 {
-			if t, ok := r.store.log.GetTerm(prevLogIndex); ok {
-				prevLogTerm = t
+		if prevLogEntryIndex > 0 {
+			if term, ok := r.store.log.GetTerm(prevLogEntryIndex); ok {
+				prevLogTerm = term
 			}
 		}
 
 		var entries []LogEntry
 
-		if next <= lastLogIndex {
+		if next <= lastLogEntryIndex {
 			const maxBatch = 128
-			to := lastLogIndex
+			to := lastLogEntryIndex
 			count := to - next + 1
 
 			if count > maxBatch {
@@ -425,6 +420,6 @@ func (r *Raft) sendAppendEntriesToAllNodes() {
 			}
 		}
 
-		go r.transport.AppendEntries(node, currentTerm, r.leaderId, prevLogIndex, prevLogTerm, entries, leaderCommit)
+		go r.transport.AppendEntries(node, currentTerm, r.leaderId, prevLogEntryIndex, prevLogTerm, entries, leaderCommit)
 	}
 }

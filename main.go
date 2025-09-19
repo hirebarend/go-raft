@@ -54,6 +54,26 @@ func main() {
 		})
 	})
 
+	r.POST("/pre-vote", func(c *gin.Context) {
+		var request internal.PreVoteRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
+			return
+		}
+
+		term, voteGranted := raft.HandlePreVote(
+			request.Term,
+			request.CandidateID,
+			request.LastLogIndex,
+			request.LastLogTerm,
+		)
+
+		c.JSON(http.StatusOK, internal.PreVoteResponse{
+			Term:        term,
+			VoteGranted: voteGranted,
+		})
+	})
+
 	r.POST("/request-vote", func(c *gin.Context) {
 		var request internal.RequestVoteRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -61,7 +81,7 @@ func main() {
 			return
 		}
 
-		term, granted := raft.HandleRequestVote(
+		term, voteGranted := raft.HandleRequestVote(
 			request.Term,
 			request.CandidateID,
 			request.LastLogIndex,
@@ -70,7 +90,7 @@ func main() {
 
 		c.JSON(http.StatusOK, internal.RequestVoteResponse{
 			Term:        term,
-			VoteGranted: granted,
+			VoteGranted: voteGranted,
 		})
 	})
 
