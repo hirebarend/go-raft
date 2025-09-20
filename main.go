@@ -98,6 +98,10 @@ func main() {
 	defer stop()
 
 	go func() {
+		raft.StartApplier()
+	}()
+
+	go func() {
 		ticker := time.NewTicker(1000 * time.Millisecond)
 		defer ticker.Stop()
 
@@ -110,6 +114,22 @@ func main() {
 			}
 		}
 	}()
+
+	// <>
+	go func() {
+		ticker := time.NewTicker(3000 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				raft.Propose(ctx, []byte("hello world"))
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	// </>
 
 	go func() {
 		if err := r.Run(addr); err != nil && err != http.ErrServerClosed {

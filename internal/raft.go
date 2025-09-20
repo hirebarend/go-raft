@@ -1,12 +1,16 @@
 package internal
 
 import (
+	"context"
 	"fmt"
 	"math/rand/v2"
+	"sync"
 	"time"
 )
 
 type Raft struct {
+	cond               *sync.Cond
+	condMutex          *sync.Mutex
 	electionDeadline   uint64
 	electionTimeoutMin int
 	electionTimeoutMax int
@@ -16,6 +20,7 @@ type Raft struct {
 	leaderId           string
 	// mu                 sync.Mutex
 	nodes     []string
+	pending   map[uint64][]chan any
 	rng       *rand.Rand
 	role      string
 	store     *Store
@@ -26,7 +31,11 @@ type Raft struct {
 func NewRaft(id string, nodes []string, store *Store, transport *Transport) *Raft {
 	seed := uint64(time.Now().UnixNano())
 
+	condMutex := &sync.Mutex{}
+
 	raft := Raft{
+		cond:               sync.NewCond(condMutex),
+		condMutex:          condMutex,
 		electionDeadline:   0,
 		electionTimeoutMin: 10,
 		electionTimeoutMax: 20,
@@ -35,6 +44,7 @@ func NewRaft(id string, nodes []string, store *Store, transport *Transport) *Raf
 		id:                 id,
 		leaderId:           "",
 		nodes:              nodes,
+		pending:            make(map[uint64][]chan any),
 		rng:                rand.New(rand.NewPCG(seed, seed>>1)),
 		role:               "candidate",
 		store:              store,
@@ -61,7 +71,7 @@ func (r *Raft) Tick() {
 		return
 
 	case "candidate", "follower":
-		fmt.Printf("ticks: %v, electionDeadline: %v\n", r.ticks, r.electionDeadline)
+		fmt.Printf("[%s] ticks: %v, electionDeadline: %v\n", r.id, r.ticks, r.electionDeadline)
 		if r.ticks >= r.electionDeadline {
 			r.startPreVote()
 		}
@@ -110,19 +120,25 @@ func (r *Raft) HandleAppendEntries(
 	for i, entry := range logEntries {
 		idx := prevLogEntryIndex + 1 + uint64(i)
 
-		if termAtIdx, ok := r.store.log.GetTerm(idx); ok { // TODO
-			if termAtIdx != entry.Term {
+		if logEntryTermAtIdx, ok := r.store.log.GetTerm(idx); ok {
+			if logEntryTermAtIdx != entry.Term {
 				r.store.log.Truncate(idx)
+
 				r.store.log.Append(logEntries[i:])
+
 				lastLogEntryIndex = logEntries[len(logEntries)-1].Index
+
 				goto COMMIT
 			}
 
 			lastLogEntryIndex = idx
+
 			continue
 		} else {
 			r.store.log.Append(logEntries[i:])
+
 			lastLogEntryIndex = logEntries[len(logEntries)-1].Index
+
 			goto COMMIT
 		}
 	}
@@ -139,14 +155,17 @@ COMMIT:
 
 	if leaderCommit > r.store.commitIndex {
 		newCommit := leaderCommit
+
 		if newCommit > lastLogEntryIndex {
 			newCommit = lastLogEntryIndex
 		}
+
 		if newCommit > r.store.commitIndex {
 			r.store.commitIndex = newCommit
-			// if r.applyCond != nil {
-			// 	r.applyCond.Signal()
-			// }
+
+			r.cond.Signal()
+
+			fmt.Printf("HHHHHHH")
 		}
 	}
 
@@ -206,7 +225,99 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIn
 	return currentTerm, true
 }
 
-// REVIEWED
+func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
+	if r.role != "leader" {
+		return nil, fmt.Errorf("not leader")
+	}
+
+	currentTerm := r.store.GetCurrentTerm()
+
+	lastLogEntryIndex, _ := r.store.log.LastIndex()
+
+	logEntry := LogEntry{
+		Data:  data,
+		Index: lastLogEntryIndex + 1,
+		Term:  currentTerm,
+	}
+
+	r.store.log.Append([]LogEntry{logEntry})
+
+	ch := make(chan any, 1)
+
+	r.pending[logEntry.Index] = append(r.pending[logEntry.Index], ch)
+
+	if r.role == "leader" {
+		r.sendAppendEntriesToAllNodes()
+	}
+
+	select {
+	case res := <-ch:
+		return res, nil
+	case <-ctx.Done():
+		ws := r.pending[logEntry.Index]
+		if len(ws) > 0 {
+			for i := range ws {
+				if ws[i] == ch {
+					ws[i] = ws[len(ws)-1]
+					ws = ws[:len(ws)-1]
+					break
+				}
+			}
+
+			if len(ws) > 0 {
+				r.pending[logEntry.Index] = ws
+			} else {
+				delete(r.pending, logEntry.Index)
+			}
+		}
+
+		return nil, ctx.Err()
+	}
+}
+
+func (r *Raft) StartApplier() {
+	for {
+		r.condMutex.Lock()
+
+		for r.store.lastApplied >= r.store.commitIndex {
+			r.cond.Wait()
+		}
+
+		r.store.lastApplied++
+
+		idx := r.store.lastApplied
+
+		r.condMutex.Unlock()
+
+		// _, ok := r.store.log.Get(idx)
+
+		// if !ok {
+		// 	// TODO:
+		// }
+
+		// res, err := r.sm.Apply(entry) // do the real work outside the lock
+
+		fmt.Printf("[%s] apply", r.id)
+
+		result := "hello world" // TODO
+
+		r.condMutex.Lock()
+
+		if ws, ok := r.pending[idx]; ok {
+			delete(r.pending, idx)
+
+			for _, ch := range ws {
+				select {
+				case ch <- result:
+				default:
+				}
+			}
+		}
+
+		r.condMutex.Unlock()
+	}
+}
+
 func (r *Raft) convertToFollower(term uint64) uint64 {
 	currentTerm := r.store.GetCurrentTerm()
 
@@ -252,6 +363,7 @@ func (r *Raft) convertToLeader() {
 		if p == r.id {
 			continue
 		}
+
 		r.store.nextIndex[p] = lastLogEntryIndex + 1
 		r.store.matchIndex[p] = 0
 	}
@@ -260,9 +372,9 @@ func (r *Raft) convertToLeader() {
 	r.store.nextIndex[r.id] = lastLogEntryIndex + 1
 
 	logEntry := LogEntry{
+		Data:  nil,
 		Index: lastLogEntryIndex + 1,
 		Term:  term,
-		// Data:  nil,
 	}
 
 	if err := r.store.log.Append([]LogEntry{logEntry}); err == nil {
@@ -276,7 +388,6 @@ func (r *Raft) convertToLeader() {
 
 	r.resetHeartbeatTimer()
 
-	// // 6) Try to advance commitIndex in case the no-op immediately forms a majority
 	// r.maybeAdvanceCommitLocked()
 }
 
@@ -288,7 +399,6 @@ func (r *Raft) resetHeartbeatTimer() {
 	r.heartbeatDeadline = r.ticks + r.heartbeatInterval
 }
 
-// REVIEWED
 func (r *Raft) startElection() {
 	currentTerm := r.store.SetCurrentTerm(r.store.GetCurrentTerm() + 1)
 	r.role = "candidate"
@@ -307,23 +417,23 @@ func (r *Raft) startElection() {
 			continue
 		}
 
-		go func() {
-			term, voteGranted := r.transport.RequestVote(node, currentTerm, r.id, lastLogEntryIndex, lastLogEntryTerm)
+		go func(n string, t uint64, ci string, llei uint64, llet uint64) {
+			term, voteGranted := r.transport.RequestVote(n, t, ci, llei, llet)
 
-			if term > currentTerm {
+			if term > t {
 				r.convertToFollower(term)
 
 				return
 			}
 
-			if r.role == "candidate" && term == currentTerm && voteGranted {
+			if r.role == "candidate" && term == t && voteGranted {
 				numberOfVotes++
 
 				if numberOfVotes > len(r.nodes)/2 {
 					r.convertToLeader()
 				}
 			}
-		}()
+		}(node, currentTerm, r.id, lastLogEntryIndex, lastLogEntryTerm)
 	}
 }
 
@@ -343,16 +453,16 @@ func (r *Raft) startPreVote() {
 	numberOfVotes := 1
 
 	for _, node := range r.nodes {
-		go func() {
-			term, voteGranted := r.transport.PreVote(node, currentTerm, r.id, lastLogEntryIndex, lastLogEntryTerm)
+		go func(n string, t uint64, ci string, llei uint64, llet uint64) {
+			term, voteGranted := r.transport.PreVote(n, t, ci, llei, llet)
 
-			if term > r.store.GetCurrentTerm() {
+			if term > t {
 				r.convertToFollower(term)
 
 				return
 			}
 
-			if r.role == "leader" || currentTerm != r.store.GetCurrentTerm() {
+			if r.role == "leader" || t != r.store.GetCurrentTerm() {
 				return
 			}
 
@@ -363,7 +473,7 @@ func (r *Raft) startPreVote() {
 					r.startElection()
 				}
 			}
-		}()
+		}(node, currentTerm, r.id, lastLogEntryIndex, lastLogEntryTerm)
 	}
 }
 
