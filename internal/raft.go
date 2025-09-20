@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"sort"
 	"sync"
 	"time"
 )
@@ -14,21 +15,22 @@ type Raft struct {
 	electionDeadline   uint64
 	electionTimeoutMin int
 	electionTimeoutMax int
+	fsm                FSM
 	heartbeatInterval  uint64
 	heartbeatDeadline  uint64
 	id                 string
 	leaderId           string
-	// mu                 sync.Mutex
-	nodes     []string
-	pending   map[uint64][]chan any
-	rng       *rand.Rand
-	role      string
-	store     *Store
-	ticks     uint64
-	transport *Transport
+	mu                 sync.Mutex
+	nodes              []string
+	pending            map[uint64][]chan any
+	rng                *rand.Rand
+	role               string
+	store              *Store
+	ticks              uint64
+	transport          *Transport
 }
 
-func NewRaft(id string, nodes []string, store *Store, transport *Transport) *Raft {
+func NewRaft(id string, nodes []string, store *Store, transport *Transport, fsm FSM) *Raft {
 	seed := uint64(time.Now().UnixNano())
 
 	condMutex := &sync.Mutex{}
@@ -39,10 +41,12 @@ func NewRaft(id string, nodes []string, store *Store, transport *Transport) *Raf
 		electionDeadline:   0,
 		electionTimeoutMin: 10,
 		electionTimeoutMax: 20,
+		fsm:                fsm,
 		heartbeatInterval:  5,
 		heartbeatDeadline:  0 + 5,
 		id:                 id,
 		leaderId:           "",
+		mu:                 sync.Mutex{},
 		nodes:              nodes,
 		pending:            make(map[uint64][]chan any),
 		rng:                rand.New(rand.NewPCG(seed, seed>>1)),
@@ -57,7 +61,6 @@ func NewRaft(id string, nodes []string, store *Store, transport *Transport) *Raf
 	return &raft
 }
 
-// REVIEWED
 func (r *Raft) Tick() {
 	r.ticks++
 
@@ -80,7 +83,6 @@ func (r *Raft) Tick() {
 	}
 }
 
-// REVIEWED
 func (r *Raft) HandleAppendEntries(
 	term uint64,
 	leaderId string,
@@ -163,9 +165,9 @@ COMMIT:
 		if newCommit > r.store.commitIndex {
 			r.store.commitIndex = newCommit
 
+			r.condMutex.Lock()
 			r.cond.Signal()
-
-			fmt.Printf("HHHHHHH")
+			r.condMutex.Unlock()
 		}
 	}
 
@@ -174,7 +176,6 @@ COMMIT:
 	return currentTerm, true
 }
 
-// REVIEWED
 func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {
 	currentTerm := r.store.GetCurrentTerm()
 
@@ -194,7 +195,6 @@ func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex,
 	return currentTerm, true
 }
 
-// REVIEWED
 func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool) {
 	currentTerm := r.store.GetCurrentTerm()
 
@@ -280,7 +280,9 @@ func (r *Raft) StartApplier() {
 		r.condMutex.Lock()
 
 		for r.store.lastApplied >= r.store.commitIndex {
+			fmt.Println("Waiting")
 			r.cond.Wait()
+			fmt.Println("Done")
 		}
 
 		r.store.lastApplied++
@@ -289,17 +291,13 @@ func (r *Raft) StartApplier() {
 
 		r.condMutex.Unlock()
 
-		// _, ok := r.store.log.Get(idx)
+		logEntry, ok := r.store.log.Get(idx)
 
-		// if !ok {
-		// 	// TODO:
-		// }
+		if !ok {
+			return
+		}
 
-		// res, err := r.sm.Apply(entry) // do the real work outside the lock
-
-		fmt.Printf("[%s] apply", r.id)
-
-		result := "hello world" // TODO
+		result := r.fsm.Apply(logEntry.Data)
 
 		r.condMutex.Lock()
 
@@ -344,9 +342,6 @@ func (r *Raft) convertToLeader() {
 	r.role = "leader"
 	r.leaderId = r.id
 
-	fmt.Println("I'm a leader now!")
-	fmt.Println(r.id)
-
 	term := r.store.GetCurrentTerm()
 
 	if r.store.nextIndex == nil {
@@ -388,7 +383,45 @@ func (r *Raft) convertToLeader() {
 
 	r.resetHeartbeatTimer()
 
-	// r.maybeAdvanceCommitLocked()
+	r.maybeAdvanceCommit()
+}
+
+func (r *Raft) maybeAdvanceCommit() {
+	if r.role != "leader" {
+		return
+	}
+
+	currentTerm := r.store.GetCurrentTerm()
+
+	matches := make([]uint64, 0, len(r.nodes))
+
+	for _, n := range r.nodes {
+		matches = append(matches, r.store.matchIndex[n])
+	}
+
+	if len(matches) == 0 {
+		return
+	}
+
+	sort.Slice(matches, func(i, j int) bool { return matches[i] < matches[j] })
+
+	candidate := matches[len(matches)-len(matches)/2+1]
+
+	if candidate == 0 {
+		return
+	}
+
+	if termAtCand, ok := r.store.log.GetTerm(candidate); !ok || termAtCand != currentTerm {
+		return
+	}
+
+	if candidate > r.store.commitIndex {
+		r.store.commitIndex = candidate
+
+		r.condMutex.Lock()
+		r.cond.Signal()
+		r.condMutex.Unlock()
+	}
 }
 
 func (r *Raft) resetElectionTimer() {
@@ -530,6 +563,39 @@ func (r *Raft) sendAppendEntriesToAllNodes() {
 			}
 		}
 
-		go r.transport.AppendEntries(node, currentTerm, r.leaderId, prevLogEntryIndex, prevLogTerm, entries, leaderCommit)
+		go func(n string, t uint64, li string, plei uint64, plet uint64, le []LogEntry, lc uint64) {
+			term, success := r.transport.AppendEntries(n, t, li, plei, plet, le, lc)
+
+			if term > r.store.GetCurrentTerm() {
+				r.convertToFollower(term)
+
+				return
+			}
+
+			if r.role != "leader" || term != t {
+				return
+			}
+
+			if success {
+				lastSent := plei
+				if len(le) > 0 {
+					lastSent = le[len(le)-1].Index
+				}
+
+				if r.store.matchIndex[n] < lastSent {
+					r.store.matchIndex[n] = lastSent
+				}
+				next := lastSent + 1
+				if r.store.nextIndex[n] < next {
+					r.store.nextIndex[n] = next
+				}
+
+				r.maybeAdvanceCommit()
+			} else {
+				if r.store.nextIndex[n] > 1 {
+					r.store.nextIndex[n]--
+				}
+			}
+		}(node, currentTerm, r.leaderId, prevLogEntryIndex, prevLogTerm, entries, leaderCommit)
 	}
 }

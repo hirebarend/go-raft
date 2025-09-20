@@ -97,9 +97,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go func() {
-		raft.StartApplier()
-	}()
+	go raft.StartApplier()
 
 	go func() {
 		ticker := time.NewTicker(1000 * time.Millisecond)
