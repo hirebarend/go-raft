@@ -11,7 +11,6 @@ import (
 
 type Raft struct {
 	cond               *sync.Cond
-	condMutex          *sync.Mutex
 	electionDeadline   uint64
 	electionTimeoutMin int
 	electionTimeoutMax int
@@ -20,7 +19,7 @@ type Raft struct {
 	heartbeatDeadline  uint64
 	id                 string
 	leaderId           string
-	mu                 sync.Mutex
+	mu                 *sync.Mutex
 	nodes              []string
 	pending            map[uint64][]chan any
 	rng                *rand.Rand
@@ -33,11 +32,10 @@ type Raft struct {
 func NewRaft(id string, nodes []string, store *Store, transport *Transport, fsm *FSM) *Raft {
 	seed := uint64(time.Now().UnixNano())
 
-	condMutex := &sync.Mutex{}
+	mu := &sync.Mutex{}
 
 	raft := Raft{
-		cond:               sync.NewCond(condMutex),
-		condMutex:          condMutex,
+		cond:               sync.NewCond(mu),
 		electionDeadline:   0,
 		electionTimeoutMin: 10,
 		electionTimeoutMax: 20,
@@ -46,7 +44,7 @@ func NewRaft(id string, nodes []string, store *Store, transport *Transport, fsm 
 		heartbeatDeadline:  0 + 5,
 		id:                 id,
 		leaderId:           "",
-		mu:                 sync.Mutex{},
+		mu:                 mu,
 		nodes:              nodes,
 		pending:            make(map[uint64][]chan any),
 		rng:                rand.New(rand.NewPCG(seed, seed>>1)),
@@ -155,9 +153,9 @@ COMMIT:
 		if newCommit > r.store.commitIndex {
 			r.store.commitIndex = newCommit
 
-			r.condMutex.Lock()
+			r.mu.Lock()
 			r.cond.Signal()
-			r.condMutex.Unlock()
+			r.mu.Unlock()
 		}
 	}
 
@@ -165,9 +163,16 @@ COMMIT:
 }
 
 func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	currentTerm := r.store.GetCurrentTerm()
 
 	if term < currentTerm {
+		return currentTerm, false
+	}
+
+	if r.role == "leader" {
 		return currentTerm, false
 	}
 
@@ -269,7 +274,7 @@ func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
 
 func (r *Raft) StartApplier() {
 	for {
-		r.condMutex.Lock()
+		r.mu.Lock()
 
 		for r.store.lastApplied >= r.store.commitIndex {
 			fmt.Println("Waiting")
@@ -281,7 +286,7 @@ func (r *Raft) StartApplier() {
 
 		idx := r.store.lastApplied
 
-		r.condMutex.Unlock()
+		r.mu.Unlock()
 
 		logEntry, ok := r.store.log.Get(idx)
 
@@ -291,7 +296,7 @@ func (r *Raft) StartApplier() {
 
 		result := r.fsm.Apply(logEntry.Data)
 
-		r.condMutex.Lock()
+		r.mu.Lock()
 
 		if ws, ok := r.pending[idx]; ok {
 			delete(r.pending, idx)
@@ -304,7 +309,7 @@ func (r *Raft) StartApplier() {
 			}
 		}
 
-		r.condMutex.Unlock()
+		r.mu.Unlock()
 	}
 }
 
@@ -410,9 +415,9 @@ func (r *Raft) maybeAdvanceCommit() {
 	if candidate > r.store.commitIndex {
 		r.store.commitIndex = candidate
 
-		r.condMutex.Lock()
+		r.mu.Lock()
 		r.cond.Signal()
-		r.condMutex.Unlock()
+		r.mu.Unlock()
 	}
 }
 
