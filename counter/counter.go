@@ -1,71 +1,75 @@
 package counter
 
-import (
-	"hash/fnv"
-)
+import "hash/maphash"
 
 type Counter struct {
-	minuteOfTheDay uint64
-	present        map[uint32]bool
-	slots          []map[uint32]bool
-	value          int64
+	minute  int
+	present map[uint32]int
+	slots   []map[uint32]struct{}
+	value   int64
 }
 
-func NewCounter() *Counter {
-	slots := make([]map[uint32]bool, 1440)
+const numberOfSlots = 1440
 
-	for i := 0; i < len(slots); i++ {
-		slots[i] = make(map[uint32]bool)
+func NewCounter() *Counter {
+	slots := make([]map[uint32]struct{}, numberOfSlots)
+
+	for i := range slots {
+		slots[i] = make(map[uint32]struct{})
 	}
 
 	return &Counter{
-		minuteOfTheDay: 0,
-		present:        make(map[uint32]bool),
-		slots:          slots,
-		value:          0,
+		minute:  -1,
+		present: make(map[uint32]int),
+		slots:   slots,
+		value:   0,
 	}
 }
 
-func (c *Counter) ClearMinute(n uint64) {
-	slot := c.slots[n]
+func (c *Counter) clearMinute(m int) {
+	slot := c.slots[m]
 
-	for x := range slot {
-		if c.present[x] {
-			delete(c.present, x)
+	for h := range slot {
+		if c.present[h] == m {
+			delete(c.present, h)
 		}
-
-		delete(slot, x)
 	}
+
+	c.slots[m] = make(map[uint32]struct{})
 }
 
-func (c *Counter) Increment(id string, n int64, minuteOfTheDay uint64) bool {
-	if c.value+n < 0 {
+func (c *Counter) Increment(id string, n int64, m int) bool {
+	v := c.value + n
+
+	if v < 0 {
 		return false
 	}
 
-	idN := hashStringToInt(id)
+	if m != c.minute {
+		c.clearMinute(m)
 
-	if c.present[idN] {
+		c.minute = m
+	}
+
+	hash := stringToUInt32(id)
+
+	if _, ok := c.present[hash]; ok {
+		c.value = v
+
 		return true
 	}
 
-	c.present[idN] = true
-	c.slots[minuteOfTheDay][idN] = true
-
-	c.value = c.value + n
-
-	if c.minuteOfTheDay != minuteOfTheDay {
-		c.minuteOfTheDay = minuteOfTheDay
-		c.ClearMinute(c.minuteOfTheDay)
-	}
+	c.present[hash] = m
+	c.slots[m][hash] = struct{}{}
+	c.value = v
 
 	return true
 }
 
-func hashStringToInt(s string) uint32 {
-	h := fnv.New32a()
+func stringToUInt32(s string) uint32 {
+	var hash maphash.Hash
 
-	h.Write([]byte(s))
+	hash.WriteString(s)
 
-	return h.Sum32()
+	return uint32(hash.Sum64())
 }

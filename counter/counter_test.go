@@ -8,7 +8,7 @@ import (
 func BenchmarkIntMin(b *testing.B) {
 	counter := NewCounter()
 
-	const pool = 100_000
+	const pool = 200_000
 	keys := make([]string, pool)
 
 	for i := 0; i < pool; i++ {
@@ -18,6 +18,6 @@ func BenchmarkIntMin(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		counter.Increment(keys[i%pool], 1, uint64((i/200)%1440))
+		counter.Increment(keys[i%pool], 1, (i/4096)%1440)
 	}
 }
