@@ -486,7 +486,10 @@ func (r *Raft) startElection() {
 }
 
 func (r *Raft) startPreVote() {
+	r.mu.Lock()
+
 	if r.role == "leader" {
+		r.mu.Unlock()
 		return
 	}
 
@@ -496,31 +499,44 @@ func (r *Raft) startPreVote() {
 
 	lastLogEntryTerm, _ := r.store.log.LastTerm()
 
-	r.resetElectionTimer()
-
 	numberOfVotes := 1
+
+	if numberOfVotes > len(r.nodes)/2 {
+		r.mu.Unlock()
+
+		r.startElection()
+
+		return
+	}
+
+	r.mu.Unlock()
+
+	var once sync.Once
 
 	for _, node := range r.nodes {
 		go func(n string, t uint64, ci string, llei uint64, llet uint64) {
 			term, voteGranted := r.transport.PreVote(n, t, ci, llei, llet)
 
-			if term > t {
-				r.convertToFollower(term)
-
+			if !voteGranted || term != t {
 				return
 			}
 
-			if r.role == "leader" || t != r.store.GetCurrentTerm() {
+			numberOfVotes++
+
+			if numberOfVotes <= len(r.nodes)/2 {
 				return
 			}
 
-			if voteGranted {
-				numberOfVotes++
+			r.mu.Lock()
+			result := r.role != "leader" &&
+				r.store.GetCurrentTerm() == t &&
+				r.ticks >= r.electionDeadline
+			r.mu.Unlock()
 
-				if numberOfVotes >= len(r.nodes)/2+1 {
-					r.startElection()
-				}
+			if result {
+				once.Do(func() { r.startElection() })
 			}
+
 		}(node, currentTerm, r.id, lastLogEntryIndex, lastLogEntryTerm)
 	}
 }
