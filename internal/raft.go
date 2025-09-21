@@ -72,7 +72,6 @@ func (r *Raft) Tick() {
 		return
 
 	case "candidate", "follower":
-		fmt.Printf("[%s] ticks: %v, electionDeadline: %v\n", r.id, r.ticks, r.electionDeadline)
 		if r.ticks >= r.electionDeadline {
 			r.startPreVote()
 		}
@@ -153,9 +152,7 @@ COMMIT:
 		if newCommit > r.store.commitIndex {
 			r.store.commitIndex = newCommit
 
-			r.mu.Lock()
 			r.cond.Signal()
-			r.mu.Unlock()
 		}
 	}
 
@@ -222,7 +219,6 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIn
 }
 
 func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
-	fmt.Printf("[%v] role: %v\n", r.id, r.role)
 	if r.role != "leader" {
 		return nil, fmt.Errorf("not leader")
 	}
@@ -277,9 +273,7 @@ func (r *Raft) StartApplier() {
 		r.mu.Lock()
 
 		for r.store.lastApplied >= r.store.commitIndex {
-			fmt.Println("Waiting")
 			r.cond.Wait()
-			fmt.Println("Done")
 		}
 
 		r.store.lastApplied++
@@ -415,9 +409,7 @@ func (r *Raft) maybeAdvanceCommit() {
 	if candidate > r.store.commitIndex {
 		r.store.commitIndex = candidate
 
-		r.mu.Lock()
 		r.cond.Signal()
-		r.mu.Unlock()
 	}
 }
 
@@ -430,6 +422,8 @@ func (r *Raft) resetHeartbeatTimer() {
 }
 
 func (r *Raft) startElection() {
+	r.mu.Lock()
+
 	currentTerm := r.store.SetCurrentTerm(r.store.GetCurrentTerm() + 1)
 	r.role = "candidate"
 
@@ -438,6 +432,16 @@ func (r *Raft) startElection() {
 	r.store.SetVotedFor(r.id)
 
 	r.resetElectionTimer()
+
+	if numberOfVotes >= len(r.nodes)/2 {
+		r.convertToLeader()
+
+		r.mu.Unlock()
+
+		return
+	}
+
+	r.mu.Unlock()
 
 	lastLogEntryIndex, _ := r.store.log.LastIndex()
 	lastLogEntryTerm, _ := r.store.log.LastTerm()
@@ -451,18 +455,32 @@ func (r *Raft) startElection() {
 			term, voteGranted := r.transport.RequestVote(n, t, ci, llei, llet)
 
 			if term > t {
+				r.mu.Lock()
 				r.convertToFollower(term)
+				r.mu.Unlock()
 
 				return
 			}
 
-			if r.role == "candidate" && term == t && voteGranted {
-				numberOfVotes++
-
-				if numberOfVotes > len(r.nodes)/2 {
-					r.convertToLeader()
-				}
+			if !voteGranted || term != t {
+				return
 			}
+
+			r.mu.Lock()
+			defer r.mu.Unlock()
+
+			if r.role != "candidate" || r.store.GetCurrentTerm() != t {
+				return
+			}
+
+			numberOfVotes++
+
+			majority := numberOfVotes > len(r.nodes)/2
+
+			if majority {
+				r.convertToLeader()
+			}
+
 		}(node, currentTerm, r.id, lastLogEntryIndex, lastLogEntryTerm)
 	}
 }
