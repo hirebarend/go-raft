@@ -463,19 +463,22 @@ func (r *Raft) startElection() {
 		go func(n string, t uint64, ci string, llei uint64, llet uint64) {
 			term, voteGranted := r.transport.RequestVote(n, t, ci, llei, llet)
 
+			r.mu.Lock()
+
 			if term > t {
-				r.mu.Lock()
 				r.convertToFollower(term)
+
 				r.mu.Unlock()
 
 				return
 			}
 
 			if !voteGranted || term != t {
+				r.mu.Unlock()
+
 				return
 			}
 
-			r.mu.Lock()
 			defer r.mu.Unlock()
 
 			if r.role != "candidate" || r.store.GetCurrentTerm() != t {
