@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -74,7 +75,6 @@ func (t *Transport) ensureClient() {
 		}
 	})
 }
-
 func (t *Transport) AppendEntries(
 	node string,
 	term uint64,
@@ -84,7 +84,7 @@ func (t *Transport) AppendEntries(
 	entries []LogEntry,
 	leaderCommit uint64,
 ) (uint64, bool) {
-	request := AppendEntriesRequest{
+	appendEntriesRequest := AppendEntriesRequest{
 		Term:         term,
 		LeaderId:     leaderId,
 		PrevLogIndex: prevLogIndex,
@@ -93,7 +93,8 @@ func (t *Transport) AppendEntries(
 		LeaderCommit: leaderCommit,
 	}
 
-	data, err := json.Marshal(request)
+	data, err := json.Marshal(appendEntriesRequest)
+
 	if err != nil {
 		return term, false
 	}
@@ -102,23 +103,49 @@ func (t *Transport) AppendEntries(
 
 	url := fmt.Sprintf("http://%s/append-entries", node)
 
-	resp, err := t.client.Post(url, "application/json", bytes.NewBuffer(data))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+
 	if err != nil {
 		return term, false
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := t.client.Do(request)
+
+	if err != nil {
 		return term, false
 	}
 
-	var response AppendEntriesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	defer func() {
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}()
+
+	if response.StatusCode != http.StatusOK {
 		return term, false
 	}
 
-	return response.Term, response.Success
+	const maxBody = 1 << 20
+
+	reader := io.LimitReader(response.Body, maxBody)
+
+	var appendEntriesResponse AppendEntriesResponse
+
+	decoder := json.NewDecoder(reader)
+
+	if err := decoder.Decode(&appendEntriesResponse); err != nil {
+		return term, false
+	}
+
+	if decoder.More() {
+		return term, false
+	}
+
+	return appendEntriesResponse.Term, appendEntriesResponse.Success
 }
 
 func (t *Transport) PreVote(
@@ -128,14 +155,15 @@ func (t *Transport) PreVote(
 	lastLogIndex uint64,
 	lastLogTerm uint64,
 ) (uint64, bool) {
-	request := PreVoteRequest{
+	preVoteRequest := PreVoteRequest{
 		Term:         term,
 		CandidateID:  candidateId,
 		LastLogIndex: lastLogIndex,
 		LastLogTerm:  lastLogTerm,
 	}
 
-	data, err := json.Marshal(request)
+	data, err := json.Marshal(preVoteRequest)
+
 	if err != nil {
 		return term, false
 	}
@@ -144,23 +172,49 @@ func (t *Transport) PreVote(
 
 	url := fmt.Sprintf("http://%s/pre-vote", node)
 
-	resp, err := t.client.Post(url, "application/json", bytes.NewBuffer(data))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+
 	if err != nil {
 		return term, false
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := t.client.Do(request)
+
+	if err != nil {
 		return term, false
 	}
 
-	var response PreVoteResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	defer func() {
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}()
+
+	if response.StatusCode != http.StatusOK {
 		return term, false
 	}
 
-	return response.Term, response.VoteGranted
+	const maxBody = 1 << 20
+
+	reader := io.LimitReader(response.Body, maxBody)
+
+	var preVoteResponse PreVoteResponse
+
+	decoder := json.NewDecoder(reader)
+
+	if err := decoder.Decode(&preVoteResponse); err != nil {
+		return term, false
+	}
+
+	if decoder.More() {
+		return term, false
+	}
+
+	return preVoteResponse.Term, preVoteResponse.VoteGranted
 }
 
 func (t *Transport) RequestVote(
@@ -170,14 +224,15 @@ func (t *Transport) RequestVote(
 	lastLogIndex uint64,
 	lastLogTerm uint64,
 ) (uint64, bool) {
-	request := RequestVoteRequest{
+	requestVoteRequest := RequestVoteRequest{
 		Term:         term,
 		CandidateID:  candidateId,
 		LastLogIndex: lastLogIndex,
 		LastLogTerm:  lastLogTerm,
 	}
 
-	data, err := json.Marshal(request)
+	data, err := json.Marshal(requestVoteRequest)
+
 	if err != nil {
 		return term, false
 	}
@@ -186,21 +241,47 @@ func (t *Transport) RequestVote(
 
 	url := fmt.Sprintf("http://%s/request-vote", node)
 
-	resp, err := t.client.Post(url, "application/json", bytes.NewBuffer(data))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+
 	if err != nil {
 		return term, false
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := t.client.Do(request)
+
+	if err != nil {
 		return term, false
 	}
 
-	var response RequestVoteResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	defer func() {
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}()
+
+	if response.StatusCode != http.StatusOK {
 		return term, false
 	}
 
-	return response.Term, response.VoteGranted
+	const maxBody = 1 << 20
+
+	reader := io.LimitReader(response.Body, maxBody)
+
+	var requestVoteResponse RequestVoteResponse
+
+	decoder := json.NewDecoder(reader)
+
+	if err := decoder.Decode(&requestVoteResponse); err != nil {
+		return term, false
+	}
+
+	if decoder.More() {
+		return term, false
+	}
+
+	return requestVoteResponse.Term, requestVoteResponse.VoteGranted
 }

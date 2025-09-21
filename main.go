@@ -121,9 +121,11 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
+				start := time.Now()
 				_, err := raft.Propose(ctx, []byte("hello world"))
 				if err == nil {
-					fmt.Printf("[%v] APPLIED\n", addr)
+					elapsed := time.Since(start)
+					fmt.Printf("[%v] APPLIED in %s\n", addr, elapsed)
 				}
 			case <-ctx.Done():
 				return

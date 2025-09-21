@@ -65,7 +65,10 @@ func (r *Raft) Tick() {
 	switch r.role {
 	case "leader":
 		if r.ticks >= r.heartbeatDeadline {
-			r.sendAppendEntriesToAllNodes()
+			r.mu.Lock()
+			r.sendAppendEntriesToAllNodesLocked()
+			r.mu.Unlock()
+
 			r.resetHeartbeatTimer()
 		}
 
@@ -219,7 +222,11 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIn
 }
 
 func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
+	r.mu.Lock()
+
 	if r.role != "leader" {
+		r.mu.Unlock()
+
 		return nil, fmt.Errorf("not leader")
 	}
 
@@ -240,7 +247,9 @@ func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
 	r.pending[logEntry.Index] = append(r.pending[logEntry.Index], ch)
 
 	if r.role == "leader" {
-		r.sendAppendEntriesToAllNodes()
+		r.sendAppendEntriesToAllNodesLocked()
+
+		r.mu.Unlock()
 	}
 
 	select {
@@ -329,7 +338,7 @@ func (r *Raft) convertToFollower(term uint64) uint64 {
 	return currentTerm
 }
 
-func (r *Raft) convertToLeader() {
+func (r *Raft) convertToLeaderLocked() {
 	r.role = "leader"
 	r.leaderId = r.id
 
@@ -370,7 +379,7 @@ func (r *Raft) convertToLeader() {
 		}
 	}
 
-	r.sendAppendEntriesToAllNodes()
+	r.sendAppendEntriesToAllNodesLocked()
 
 	r.resetHeartbeatTimer()
 
@@ -402,7 +411,7 @@ func (r *Raft) maybeAdvanceCommit() {
 		return
 	}
 
-	if termAtCand, ok := r.store.log.GetTerm(candidate); !ok || termAtCand != currentTerm {
+	if termAtCandidate, ok := r.store.log.GetTerm(candidate); !ok || termAtCandidate != currentTerm {
 		return
 	}
 
@@ -434,7 +443,7 @@ func (r *Raft) startElection() {
 	r.resetElectionTimer()
 
 	if numberOfVotes >= len(r.nodes)/2 {
-		r.convertToLeader()
+		r.convertToLeaderLocked()
 
 		r.mu.Unlock()
 
@@ -478,7 +487,7 @@ func (r *Raft) startElection() {
 			majority := numberOfVotes > len(r.nodes)/2
 
 			if majority {
-				r.convertToLeader()
+				r.convertToLeaderLocked()
 			}
 
 		}(node, currentTerm, r.id, lastLogEntryIndex, lastLogEntryTerm)
@@ -541,11 +550,10 @@ func (r *Raft) startPreVote() {
 	}
 }
 
-func (r *Raft) sendAppendEntriesToAllNodes() {
+func (r *Raft) sendAppendEntriesToAllNodesLocked() {
 	currentTerm := r.store.GetCurrentTerm()
 
 	lastLogEntryIndex, _ := r.store.log.LastIndex()
-	leaderCommit := r.store.commitIndex
 
 	for _, node := range r.nodes {
 		if node == r.id {
@@ -564,12 +572,10 @@ func (r *Raft) sendAppendEntriesToAllNodes() {
 			prevLogEntryIndex = next - 1
 		}
 
-		var prevLogTerm uint64
+		var prevLogEntryTerm uint64
 
 		if prevLogEntryIndex > 0 {
-			if term, ok := r.store.log.GetTerm(prevLogEntryIndex); ok {
-				prevLogTerm = term
-			}
+			prevLogEntryTerm, _ = r.store.log.GetTerm(prevLogEntryIndex)
 		}
 
 		var entries []LogEntry
@@ -596,6 +602,9 @@ func (r *Raft) sendAppendEntriesToAllNodes() {
 
 		go func(n string, t uint64, li string, plei uint64, plet uint64, le []LogEntry, lc uint64) {
 			term, success := r.transport.AppendEntries(n, t, li, plei, plet, le, lc)
+
+			r.mu.Lock()
+			defer r.mu.Unlock()
 
 			if term > r.store.GetCurrentTerm() {
 				r.convertToFollower(term)
@@ -627,6 +636,6 @@ func (r *Raft) sendAppendEntriesToAllNodes() {
 					r.store.nextIndex[n]--
 				}
 			}
-		}(node, currentTerm, r.leaderId, prevLogEntryIndex, prevLogTerm, entries, leaderCommit)
+		}(node, currentTerm, r.leaderId, prevLogEntryIndex, prevLogEntryTerm, entries, r.store.commitIndex)
 	}
 }
