@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"sync"
 	"time"
 )
 
 type Transport struct {
 	client *http.Client
+	once   sync.Once
 }
 
 type AppendEntriesRequest struct {
@@ -50,6 +54,27 @@ type RequestVoteResponse struct {
 	VoteGranted bool   `json:"voteGranted"`
 }
 
+func (t *Transport) ensureClient() {
+	t.once.Do(func() {
+		t.client = &http.Client{
+			Timeout: 2 * time.Second,
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				DialContext: (&net.Dialer{
+					Timeout:   1 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout:   1 * time.Second,
+				ResponseHeaderTimeout: 1500 * time.Millisecond,
+				ExpectContinueTimeout: 1 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   10,
+			},
+		}
+	})
+}
+
 func (t *Transport) AppendEntries(
 	node string,
 	term uint64,
@@ -73,9 +98,7 @@ func (t *Transport) AppendEntries(
 		return term, false
 	}
 
-	if t.client == nil {
-		t.client = &http.Client{Timeout: 2 * time.Second}
-	}
+	t.ensureClient()
 
 	url := fmt.Sprintf("http://%s/append-entries", node)
 
@@ -84,6 +107,11 @@ func (t *Transport) AppendEntries(
 		return term, false
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body)
+		return term, false
+	}
 
 	var response AppendEntriesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
@@ -112,9 +140,7 @@ func (t *Transport) PreVote(
 		return term, false
 	}
 
-	if t.client == nil {
-		t.client = &http.Client{Timeout: 2 * time.Second}
-	}
+	t.ensureClient()
 
 	url := fmt.Sprintf("http://%s/pre-vote", node)
 
@@ -123,6 +149,11 @@ func (t *Transport) PreVote(
 		return term, false
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body)
+		return term, false
+	}
 
 	var response PreVoteResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
@@ -151,9 +182,7 @@ func (t *Transport) RequestVote(
 		return term, false
 	}
 
-	if t.client == nil {
-		t.client = &http.Client{Timeout: 2 * time.Second}
-	}
+	t.ensureClient()
 
 	url := fmt.Sprintf("http://%s/request-vote", node)
 
@@ -162,6 +191,11 @@ func (t *Transport) RequestVote(
 		return term, false
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body)
+		return term, false
+	}
 
 	var response RequestVoteResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {

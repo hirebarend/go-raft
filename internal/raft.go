@@ -15,7 +15,7 @@ type Raft struct {
 	electionDeadline   uint64
 	electionTimeoutMin int
 	electionTimeoutMax int
-	fsm                FSM
+	fsm                *FSM
 	heartbeatInterval  uint64
 	heartbeatDeadline  uint64
 	id                 string
@@ -30,7 +30,7 @@ type Raft struct {
 	transport          *Transport
 }
 
-func NewRaft(id string, nodes []string, store *Store, transport *Transport, fsm FSM) *Raft {
+func NewRaft(id string, nodes []string, store *Store, transport *Transport, fsm *FSM) *Raft {
 	seed := uint64(time.Now().UnixNano())
 
 	condMutex := &sync.Mutex{}
@@ -91,6 +91,9 @@ func (r *Raft) HandleAppendEntries(
 	logEntries []LogEntry,
 	leaderCommit uint64,
 ) (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	currentTerm := r.store.GetCurrentTerm()
 
 	if term < currentTerm {
@@ -109,6 +112,8 @@ func (r *Raft) HandleAppendEntries(
 		r.leaderId = leaderId
 	}
 
+	r.resetElectionTimer()
+
 	if prevLogEntryIndex > 0 {
 		if termAtPrevLogIndex, ok := r.store.log.GetTerm(prevLogEntryIndex); !ok || termAtPrevLogIndex != prevLogEntryTerm {
 			r.resetElectionTimer()
@@ -116,8 +121,6 @@ func (r *Raft) HandleAppendEntries(
 			return currentTerm, false
 		}
 	}
-
-	lastLogEntryIndex := prevLogEntryIndex
 
 	for i, entry := range logEntries {
 		idx := prevLogEntryIndex + 1 + uint64(i)
@@ -128,34 +131,21 @@ func (r *Raft) HandleAppendEntries(
 
 				r.store.log.Append(logEntries[i:])
 
-				lastLogEntryIndex = logEntries[len(logEntries)-1].Index
-
 				goto COMMIT
 			}
-
-			lastLogEntryIndex = idx
 
 			continue
 		} else {
 			r.store.log.Append(logEntries[i:])
-
-			lastLogEntryIndex = logEntries[len(logEntries)-1].Index
 
 			goto COMMIT
 		}
 	}
 
 COMMIT:
-	if lastLogEntryIndex == 0 {
-		if logEntryIndex, ok := r.store.log.LastIndex(); ok {
-			lastLogEntryIndex = logEntryIndex
-		} else {
-			r.resetElectionTimer()
-			return currentTerm, false
-		}
-	}
-
 	if leaderCommit > r.store.commitIndex {
+		lastLogEntryIndex, _ := r.store.log.LastIndex()
+
 		newCommit := leaderCommit
 
 		if newCommit > lastLogEntryIndex {
@@ -170,8 +160,6 @@ COMMIT:
 			r.condMutex.Unlock()
 		}
 	}
-
-	r.resetElectionTimer()
 
 	return currentTerm, true
 }
@@ -196,6 +184,9 @@ func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex,
 }
 
 func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	currentTerm := r.store.GetCurrentTerm()
 
 	if term < currentTerm {
@@ -206,12 +197,12 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIn
 		currentTerm = r.convertToFollower(term)
 	}
 
-	myLastLogEntryIndex, _ := r.store.log.LastIndex()
-	myLastLogEntryTerm, _ := r.store.log.LastTerm()
-
 	if r.store.GetVotedFor() != "" && r.store.GetVotedFor() != candidateId {
 		return currentTerm, false
 	}
+
+	myLastLogEntryIndex, _ := r.store.log.LastIndex()
+	myLastLogEntryTerm, _ := r.store.log.LastTerm()
 
 	if !((lastLogEntryTerm > myLastLogEntryTerm) ||
 		(lastLogEntryTerm == myLastLogEntryTerm && lastLogEntryIndex >= myLastLogEntryIndex)) {
@@ -226,6 +217,7 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIn
 }
 
 func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
+	fmt.Printf("[%v] role: %v\n", r.id, r.role)
 	if r.role != "leader" {
 		return nil, fmt.Errorf("not leader")
 	}

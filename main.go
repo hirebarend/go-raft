@@ -29,7 +29,7 @@ func main() {
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
 	store := internal.NewStore(&internal.Log{})
-	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), store, &internal.Transport{})
+	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), store, &internal.Transport{}, &internal.FSM{})
 
 	r := gin.Default()
 
@@ -121,7 +121,10 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				raft.Propose(ctx, []byte("hello world"))
+				_, err := raft.Propose(ctx, []byte("hello world"))
+				if err == nil {
+					fmt.Printf("[%v] APPLIED\n", addr)
+				}
 			case <-ctx.Done():
 				return
 			}
