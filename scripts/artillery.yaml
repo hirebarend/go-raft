@@ -1,0 +1,25 @@
+config:
+  target: "http://localhost:8082"
+  phases:
+    - duration: 90
+      arrivalRate: 10
+      rampTo: 150
+
+    - name: sustain
+      duration: 300
+      arrivalRate: 150
+
+  defaults:
+    headers:
+      Content-Type: application/json
+  plugins:
+    expect: {}
+
+scenarios:
+  - name: POST /propose
+    flow:
+      - post:
+          url: "/propose"
+          json: {}
+          expect:
+            - statusCode: 200

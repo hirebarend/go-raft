@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/hirebarend/raft-go/internal"
 )
 
@@ -29,7 +30,7 @@ func main() {
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
 	store := internal.NewStore(&internal.Log{})
-	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), store, &internal.Transport{}, &internal.FSM{})
+	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), store, &internal.Transport{}, internal.NewFSM())
 
 	r := gin.Default()
 
@@ -94,13 +95,23 @@ func main() {
 		})
 	})
 
+	r.POST("/propose", func(c *gin.Context) {
+		result, err := raft.Propose(c, []byte(uuid.New().String()))
+
+		c.JSON(http.StatusOK, gin.H{
+			"ok":        err == nil,
+			"result":    result,
+			"leader_id": raft.GetLeaderId(),
+		})
+	})
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	go raft.StartApplier()
 
 	go func() {
-		ticker := time.NewTicker(1000 * time.Millisecond)
+		ticker := time.NewTicker(10 * time.Millisecond) // TODO
 		defer ticker.Stop()
 
 		for {
@@ -112,33 +123,6 @@ func main() {
 			}
 		}
 	}()
-
-	// <>
-	go func() {
-		ticker := time.NewTicker(3000 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				if raft.IsLeader() {
-					for i := 0; i <= 10; i++ {
-						go func() {
-							start := time.Now()
-							_, err := raft.Propose(ctx, []byte("hello world"))
-							if err == nil {
-								elapsed := time.Since(start)
-								fmt.Printf("[%v] APPLIED in %s\n", addr, elapsed)
-							}
-						}()
-					}
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	// </>
 
 	go func() {
 		if err := r.Run(addr); err != nil && err != http.ErrServerClosed {

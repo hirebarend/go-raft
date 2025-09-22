@@ -37,11 +37,11 @@ func NewRaft(id string, nodes []string, store *Store, transport *Transport, fsm 
 	raft := Raft{
 		cond:               sync.NewCond(mu),
 		electionDeadline:   0,
-		electionTimeoutMin: 10,
-		electionTimeoutMax: 20,
+		electionTimeoutMin: 15 * 5,
+		electionTimeoutMax: 15 * 6,
 		fsm:                fsm,
-		heartbeatInterval:  5,
-		heartbeatDeadline:  0 + 5,
+		heartbeatInterval:  15,
+		heartbeatDeadline:  0 + 15,
 		id:                 id,
 		leaderId:           "",
 		mu:                 mu,
@@ -81,6 +81,10 @@ func (r *Raft) Tick() {
 
 		return
 	}
+}
+
+func (r *Raft) GetLeaderId() string {
+	return r.leaderId
 }
 
 func (r *Raft) HandleAppendEntries(
