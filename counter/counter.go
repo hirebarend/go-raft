@@ -8,28 +8,35 @@ import (
 type Counter struct {
 	minute  int16
 	mu      sync.Mutex
-	present map[uint32]bool
+	present map[uint64]bool
 	seed    maphash.Seed
-	slots   []map[uint32]bool
+	slots   []map[uint64]bool
 	value   int64
 }
 
 const numberOfSlots = 1440
 
 func NewCounter() *Counter {
-	slots := make([]map[uint32]bool, numberOfSlots)
+	slots := make([]map[uint64]bool, numberOfSlots)
 
 	for i := range slots {
-		slots[i] = make(map[uint32]bool)
+		slots[i] = make(map[uint64]bool)
 	}
 
 	return &Counter{
 		minute:  -1,
-		present: make(map[uint32]bool),
+		present: make(map[uint64]bool),
 		seed:    maphash.MakeSeed(),
 		slots:   slots,
 		value:   0,
 	}
+}
+
+func (c *Counter) Retrieve() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.value
 }
 
 func (c *Counter) Increment(id string, n int64, m int16) bool {
@@ -49,7 +56,7 @@ func (c *Counter) Increment(id string, n int64, m int16) bool {
 		c.minute = m
 	}
 
-	hash := uint32(maphash.String(c.seed, id))
+	hash := maphash.String(c.seed, id)
 
 	if _, ok := c.present[hash]; ok {
 		return true
