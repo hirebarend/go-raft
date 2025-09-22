@@ -221,6 +221,10 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIn
 	return currentTerm, true
 }
 
+func (r *Raft) IsLeader() bool {
+	return r.role == "leader"
+}
+
 func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
 	r.mu.Lock()
 
@@ -246,11 +250,9 @@ func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
 
 	r.pending[logEntry.Index] = append(r.pending[logEntry.Index], ch)
 
-	if r.role == "leader" {
-		r.sendAppendEntriesToAllNodesLocked()
+	// r.sendAppendEntriesToAllNodesLocked()
 
-		r.mu.Unlock()
-	}
+	r.mu.Unlock()
 
 	select {
 	case res := <-ch:
