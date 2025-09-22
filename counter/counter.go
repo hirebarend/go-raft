@@ -3,42 +3,58 @@ package counter
 import "hash/maphash"
 
 type Counter struct {
-	minute  int
-	present map[uint32]int
-	slots   []map[uint32]struct{}
+	minute  int16
+	present map[uint32]bool
+	seed    maphash.Seed
+	slots   []map[uint32]bool
 	value   int64
 }
 
 const numberOfSlots = 1440
 
 func NewCounter() *Counter {
-	slots := make([]map[uint32]struct{}, numberOfSlots)
+	slots := make([]map[uint32]bool, numberOfSlots)
 
 	for i := range slots {
-		slots[i] = make(map[uint32]struct{})
+		slots[i] = make(map[uint32]bool)
 	}
 
 	return &Counter{
 		minute:  -1,
-		present: make(map[uint32]int),
+		present: make(map[uint32]bool),
+		seed:    maphash.MakeSeed(),
 		slots:   slots,
 		value:   0,
 	}
 }
 
-func (c *Counter) clearMinute(m int) {
+func (c *Counter) clearMinute(m int16) {
 	slot := c.slots[m]
 
 	for h := range slot {
-		if c.present[h] == m {
+		if c.present[h] {
 			delete(c.present, h)
 		}
 	}
 
-	c.slots[m] = make(map[uint32]struct{})
+	c.slots[m] = make(map[uint32]bool)
 }
 
-func (c *Counter) Increment(id string, n int64, m int) bool {
+func (c *Counter) clearMinuteRange(from int16, to int16) {
+	if from == -1 {
+		return
+	}
+
+	for i := (from + 1) % numberOfSlots; ; i = (i + 1) % numberOfSlots {
+		c.clearMinute(i)
+
+		if i == to {
+			break
+		}
+	}
+}
+
+func (c *Counter) Increment(id string, n int64, m int16) bool {
 	v := c.value + n
 
 	if v < 0 {
@@ -46,12 +62,12 @@ func (c *Counter) Increment(id string, n int64, m int) bool {
 	}
 
 	if m != c.minute {
-		c.clearMinute(m)
+		c.clearMinuteRange(c.minute, m%numberOfSlots)
 
 		c.minute = m
 	}
 
-	hash := stringToUInt32(id)
+	hash := uint32(maphash.String(c.seed, id))
 
 	if _, ok := c.present[hash]; ok {
 		c.value = v
@@ -59,17 +75,9 @@ func (c *Counter) Increment(id string, n int64, m int) bool {
 		return true
 	}
 
-	c.present[hash] = m
-	c.slots[m][hash] = struct{}{}
+	c.present[hash] = true
+	c.slots[m][hash] = true
 	c.value = v
 
 	return true
-}
-
-func stringToUInt32(s string) uint32 {
-	var hash maphash.Hash
-
-	hash.WriteString(s)
-
-	return uint32(hash.Sum64())
 }

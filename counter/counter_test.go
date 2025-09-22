@@ -18,6 +18,6 @@ func BenchmarkIntMin(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		counter.Increment(keys[i%pool], 1, (i/4096)%1440)
+		counter.Increment(keys[i%pool], 1, int16((i/4096)%1440))
 	}
 }
