@@ -29,7 +29,9 @@ func NewCounter() *Counter {
 }
 
 func (c *Counter) clearMinute(m int16) {
-	slot := c.slots[m]
+	idx := m % numberOfSlots
+
+	slot := c.slots[idx]
 
 	for h := range slot {
 		if c.present[h] {
@@ -37,13 +39,15 @@ func (c *Counter) clearMinute(m int16) {
 		}
 	}
 
-	c.slots[m] = make(map[uint32]bool)
+	c.slots[idx] = make(map[uint32]bool)
 }
 
 func (c *Counter) clearMinuteRange(from int16, to int16) {
 	if from == -1 {
 		return
 	}
+
+	to = to % numberOfSlots
 
 	for i := (from + 1) % numberOfSlots; ; i = (i + 1) % numberOfSlots {
 		c.clearMinute(i)
@@ -56,13 +60,14 @@ func (c *Counter) clearMinuteRange(from int16, to int16) {
 
 func (c *Counter) Increment(id string, n int64, m int16) bool {
 	v := c.value + n
-
 	if v < 0 {
 		return false
 	}
 
+	m = m % numberOfSlots
+
 	if m != c.minute {
-		c.clearMinuteRange(c.minute, m%numberOfSlots)
+		c.clearMinuteRange(c.minute, m)
 
 		c.minute = m
 	}
