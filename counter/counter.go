@@ -1,9 +1,13 @@
 package counter
 
-import "hash/maphash"
+import (
+	"hash/maphash"
+	"sync"
+)
 
 type Counter struct {
 	minute  int16
+	mu      sync.Mutex
 	present map[uint32]bool
 	seed    maphash.Seed
 	slots   []map[uint32]bool
@@ -28,37 +32,10 @@ func NewCounter() *Counter {
 	}
 }
 
-func (c *Counter) clearMinute(m int16) {
-	idx := m % numberOfSlots
-
-	slot := c.slots[idx]
-
-	for h := range slot {
-		if c.present[h] {
-			delete(c.present, h)
-		}
-	}
-
-	c.slots[idx] = make(map[uint32]bool)
-}
-
-func (c *Counter) clearMinuteRange(from int16, to int16) {
-	if from == -1 {
-		return
-	}
-
-	to = to % numberOfSlots
-
-	for i := (from + 1) % numberOfSlots; ; i = (i + 1) % numberOfSlots {
-		c.clearMinute(i)
-
-		if i == to {
-			break
-		}
-	}
-}
-
 func (c *Counter) Increment(id string, n int64, m int16) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	v := c.value + n
 	if v < 0 {
 		return false
@@ -75,8 +52,6 @@ func (c *Counter) Increment(id string, n int64, m int16) bool {
 	hash := uint32(maphash.String(c.seed, id))
 
 	if _, ok := c.present[hash]; ok {
-		c.value = v
-
 		return true
 	}
 
@@ -85,4 +60,27 @@ func (c *Counter) Increment(id string, n int64, m int16) bool {
 	c.value = v
 
 	return true
+}
+
+func (c *Counter) clearMinute(m int16) {
+	slot := c.slots[m%numberOfSlots]
+
+	for h := range slot {
+		delete(c.present, h)
+		delete(slot, h)
+	}
+}
+
+func (c *Counter) clearMinuteRange(from int16, to int16) {
+	if from == -1 {
+		return
+	}
+
+	for i := (int16(from) + 1) % numberOfSlots; ; i = (i + 1) % numberOfSlots {
+		c.clearMinute(i)
+
+		if i == to {
+			break
+		}
+	}
 }
