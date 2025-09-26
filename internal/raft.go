@@ -105,11 +105,9 @@ func (r *Raft) HandleAppendEntries(
 	}
 
 	if term > currentTerm {
-		currentTerm = r.convertToFollower(term)
-	} else {
-		if r.role != "follower" {
-			r.role = "follower"
-		}
+		currentTerm = r.convertToFollowerLocked(term)
+	} else if r.role != "follower" {
+		r.role = "follower"
 	}
 
 	if leaderId != "" {
@@ -119,49 +117,16 @@ func (r *Raft) HandleAppendEntries(
 	r.resetElectionTimer()
 
 	if prevLogEntryIndex > 0 {
-		if termAtPrevLogIndex, ok := r.store.log.GetTerm(prevLogEntryIndex); !ok || termAtPrevLogIndex != prevLogEntryTerm {
+		if termAtPrevLogEntryIndex, ok := r.store.log.GetTerm(prevLogEntryIndex); !ok || termAtPrevLogEntryIndex != prevLogEntryTerm {
 			r.resetElectionTimer()
 
 			return currentTerm, false
 		}
 	}
 
-	for i, entry := range logEntries {
-		idx := prevLogEntryIndex + 1 + uint64(i)
+	r.appendEntriesLocked(prevLogEntryIndex, logEntries)
 
-		if logEntryTermAtIdx, ok := r.store.log.GetTerm(idx); ok {
-			if logEntryTermAtIdx != entry.Term {
-				r.store.log.Truncate(idx)
-
-				r.store.log.Append(logEntries[i:])
-
-				goto COMMIT
-			}
-
-			continue
-		} else {
-			r.store.log.Append(logEntries[i:])
-
-			goto COMMIT
-		}
-	}
-
-COMMIT:
-	if leaderCommit > r.store.commitIndex {
-		lastLogEntryIndex, _ := r.store.log.LastIndex()
-
-		newCommit := leaderCommit
-
-		if newCommit > lastLogEntryIndex {
-			newCommit = lastLogEntryIndex
-		}
-
-		if newCommit > r.store.commitIndex {
-			r.store.commitIndex = newCommit
-
-			r.cond.Signal()
-		}
-	}
+	r.commitToLeaderCommitLocked(leaderCommit)
 
 	return currentTerm, true
 }
@@ -176,7 +141,7 @@ func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex,
 		return currentTerm, false
 	}
 
-	if r.role == "leader" {
+	if r.IsLeader() {
 		return currentTerm, false
 	}
 
@@ -184,8 +149,7 @@ func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex,
 
 	myLastLogEntryTerm, _ := r.store.log.LastTerm()
 
-	if !((lastLogEntryTerm > myLastLogEntryTerm) ||
-		(lastLogEntryTerm == myLastLogEntryTerm && lastLogEntryIndex >= myLastLogEntryIndex)) {
+	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {
 		return currentTerm, false
 	}
 
@@ -203,7 +167,7 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIn
 	}
 
 	if term > currentTerm {
-		currentTerm = r.convertToFollower(term)
+		currentTerm = r.convertToFollowerLocked(term)
 	}
 
 	if r.store.GetVotedFor() != "" && r.store.GetVotedFor() != candidateId {
@@ -213,8 +177,7 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIn
 	myLastLogEntryIndex, _ := r.store.log.LastIndex()
 	myLastLogEntryTerm, _ := r.store.log.LastTerm()
 
-	if !((lastLogEntryTerm > myLastLogEntryTerm) ||
-		(lastLogEntryTerm == myLastLogEntryTerm && lastLogEntryIndex >= myLastLogEntryIndex)) {
+	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {
 		return currentTerm, false
 	}
 
@@ -232,7 +195,7 @@ func (r *Raft) IsLeader() bool {
 func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
 	r.mu.Lock()
 
-	if r.role != "leader" {
+	if !r.IsLeader() {
 		r.mu.Unlock()
 
 		return nil, fmt.Errorf("not leader")
@@ -322,7 +285,7 @@ func (r *Raft) StartApplier() {
 	}
 }
 
-func (r *Raft) convertToFollower(term uint64) uint64 {
+func (r *Raft) convertToFollowerLocked(term uint64) uint64 {
 	currentTerm := r.store.GetCurrentTerm()
 
 	if term < currentTerm {
@@ -339,7 +302,7 @@ func (r *Raft) convertToFollower(term uint64) uint64 {
 
 	r.resetElectionTimer()
 
-	// r.leaderId = ""
+	// r.leaderId = "" // intentionally preserved as a comment
 
 	return currentTerm
 }
@@ -393,7 +356,7 @@ func (r *Raft) convertToLeaderLocked() {
 }
 
 func (r *Raft) maybeAdvanceCommit() {
-	if r.role != "leader" {
+	if !r.IsLeader() {
 		return
 	}
 
@@ -472,7 +435,7 @@ func (r *Raft) startElection() {
 			r.mu.Lock()
 
 			if term > t {
-				r.convertToFollower(term)
+				r.convertToFollowerLocked(term)
 
 				r.mu.Unlock()
 
@@ -506,8 +469,9 @@ func (r *Raft) startElection() {
 func (r *Raft) startPreVote() {
 	r.mu.Lock()
 
-	if r.role == "leader" {
+	if r.IsLeader() {
 		r.mu.Unlock()
+
 		return
 	}
 
@@ -546,7 +510,7 @@ func (r *Raft) startPreVote() {
 			}
 
 			r.mu.Lock()
-			result := r.role != "leader" &&
+			result := !r.IsLeader() &&
 				r.store.GetCurrentTerm() == t &&
 				r.ticks >= r.electionDeadline
 			r.mu.Unlock()
@@ -554,7 +518,6 @@ func (r *Raft) startPreVote() {
 			if result {
 				once.Do(func() { r.startElection() })
 			}
-
 		}(node, currentTerm, r.id, lastLogEntryIndex, lastLogEntryTerm)
 	}
 }
@@ -616,17 +579,18 @@ func (r *Raft) sendAppendEntriesToAllNodesLocked() {
 			defer r.mu.Unlock()
 
 			if term > r.store.GetCurrentTerm() {
-				r.convertToFollower(term)
+				r.convertToFollowerLocked(term)
 
 				return
 			}
 
-			if r.role != "leader" || term != t {
+			if !r.IsLeader() || term != t {
 				return
 			}
 
 			if success {
 				lastSent := plei
+
 				if len(le) > 0 {
 					lastSent = le[len(le)-1].Index
 				}
@@ -634,7 +598,9 @@ func (r *Raft) sendAppendEntriesToAllNodesLocked() {
 				if r.store.matchIndex[n] < lastSent {
 					r.store.matchIndex[n] = lastSent
 				}
+
 				next := lastSent + 1
+
 				if r.store.nextIndex[n] < next {
 					r.store.nextIndex[n] = next
 				}
@@ -646,5 +612,46 @@ func (r *Raft) sendAppendEntriesToAllNodesLocked() {
 				}
 			}
 		}(node, currentTerm, r.leaderId, prevLogEntryIndex, prevLogEntryTerm, entries, r.store.commitIndex)
+	}
+}
+
+func logIsUpToDate(myIndex, myTerm, otherIndex, otherTerm uint64) bool {
+	return (otherTerm > myTerm) || (otherTerm == myTerm && otherIndex >= myIndex)
+}
+
+func (r *Raft) appendEntriesLocked(prevLogEntryIndex uint64, logEntries []LogEntry) {
+	for i, entry := range logEntries {
+		idx := prevLogEntryIndex + 1 + uint64(i)
+
+		if logEntryTermAtIdx, ok := r.store.log.GetTerm(idx); ok {
+			if logEntryTermAtIdx != entry.Term {
+				r.store.log.Truncate(idx)
+				r.store.log.Append(logEntries[i:])
+				return
+			}
+
+			continue
+		}
+
+		r.store.log.Append(logEntries[i:])
+		return
+	}
+}
+
+func (r *Raft) commitToLeaderCommitLocked(leaderCommit uint64) {
+	if leaderCommit <= r.store.commitIndex {
+		return
+	}
+
+	lastLogEntryIndex, _ := r.store.log.LastIndex()
+	newCommit := leaderCommit
+
+	if newCommit > lastLogEntryIndex {
+		newCommit = lastLogEntryIndex
+	}
+
+	if newCommit > r.store.commitIndex {
+		r.store.commitIndex = newCommit
+		r.cond.Signal()
 	}
 }
