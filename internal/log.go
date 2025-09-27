@@ -22,9 +22,9 @@ func (l *Log) Append(logEntries []LogEntry) error {
 	return nil
 }
 
-func (l *Log) Get(index uint64) (LogEntry, bool) {
+func (l *Log) Get(index uint64) (*LogEntry, bool) {
 	if len(l.logEntries) == 0 {
-		return LogEntry{}, false
+		return nil, false
 	}
 
 	lo, hi := 0, len(l.logEntries)-1
@@ -34,7 +34,7 @@ func (l *Log) Get(index uint64) (LogEntry, bool) {
 		logEntry := l.logEntries[mid]
 
 		if logEntry.Index == index {
-			return logEntry, true
+			return &logEntry, true
 		}
 
 		if logEntry.Index < index {
@@ -44,7 +44,7 @@ func (l *Log) Get(index uint64) (LogEntry, bool) {
 		}
 	}
 
-	return LogEntry{}, false
+	return nil, false
 }
 
 func (l *Log) GetTerm(index uint64) (uint64, bool) {
@@ -57,12 +57,12 @@ func (l *Log) GetTerm(index uint64) (uint64, bool) {
 	return logEntry.Term, true
 }
 
-func (l *Log) Last() (LogEntry, bool) {
+func (l *Log) Last() (*LogEntry, bool) {
 	if len(l.logEntries) == 0 {
-		return LogEntry{}, false
+		return nil, false
 	}
 
-	return l.logEntries[len(l.logEntries)-1], true
+	return &l.logEntries[len(l.logEntries)-1], true
 }
 
 func (l *Log) LastIndex() (uint64, bool) {

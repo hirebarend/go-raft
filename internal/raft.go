@@ -116,17 +116,13 @@ func (r *Raft) HandleAppendEntries(
 
 	r.resetElectionTimer()
 
-	if prevLogEntryIndex > 0 {
-		if termAtPrevLogEntryIndex, ok := r.store.log.GetTerm(prevLogEntryIndex); !ok || termAtPrevLogEntryIndex != prevLogEntryTerm {
-			r.resetElectionTimer()
-
-			return currentTerm, false
-		}
+	if !r.isLogEntryOkay(prevLogEntryIndex, prevLogEntryTerm) {
+		return currentTerm, false
 	}
 
 	r.appendEntriesLocked(prevLogEntryIndex, logEntries)
 
-	r.commitToLeaderCommitLocked(leaderCommit)
+	r.setCommitIndexLocked(leaderCommit)
 
 	return currentTerm, true
 }
@@ -355,6 +351,20 @@ func (r *Raft) convertToLeaderLocked() {
 	r.maybeAdvanceCommit()
 }
 
+func (r *Raft) isLogEntryOkay(index uint64, term uint64) bool {
+	if index == 0 {
+		return true
+	}
+
+	prevLogEntry, ok := r.store.log.Get(index)
+
+	if !ok || prevLogEntry == nil || prevLogEntry.Term != term {
+		return false
+	}
+
+	return true
+}
+
 func (r *Raft) maybeAdvanceCommit() {
 	if !r.IsLeader() {
 		return
@@ -565,7 +575,7 @@ func (r *Raft) sendAppendEntriesToAllNodesLocked() {
 
 			for i := next; i <= to; i++ {
 				if e, ok := r.store.log.Get(i); ok {
-					entries = append(entries, e)
+					entries = append(entries, *e)
 				} else {
 					break
 				}
@@ -627,6 +637,7 @@ func (r *Raft) appendEntriesLocked(prevLogEntryIndex uint64, logEntries []LogEnt
 			if logEntryTermAtIdx != entry.Term {
 				r.store.log.Truncate(idx)
 				r.store.log.Append(logEntries[i:])
+
 				return
 			}
 
@@ -634,24 +645,29 @@ func (r *Raft) appendEntriesLocked(prevLogEntryIndex uint64, logEntries []LogEnt
 		}
 
 		r.store.log.Append(logEntries[i:])
+
 		return
 	}
 }
 
-func (r *Raft) commitToLeaderCommitLocked(leaderCommit uint64) {
-	if leaderCommit <= r.store.commitIndex {
+func (r *Raft) setCommitIndexLocked(commitIndex uint64) {
+	if commitIndex <= r.store.commitIndex {
 		return
 	}
 
-	lastLogEntryIndex, _ := r.store.log.LastIndex()
-	newCommit := leaderCommit
+	logEntry, ok := r.store.log.Last()
 
-	if newCommit > lastLogEntryIndex {
-		newCommit = lastLogEntryIndex
+	if !ok {
+		return
 	}
 
-	if newCommit > r.store.commitIndex {
-		r.store.commitIndex = newCommit
+	if logEntry.Index > r.store.commitIndex {
+		r.store.commitIndex = logEntry.Index
 		r.cond.Signal()
+
+		return
 	}
+
+	r.store.commitIndex = commitIndex
+	r.cond.Signal()
 }
