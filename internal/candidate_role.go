@@ -42,8 +42,16 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 		return
 	}
 
-	lastLogEntryIndex, _ := c.raft.store.log.LastIndex()
-	lastLogEntryTerm, _ := c.raft.store.log.LastTerm()
+	lastLogEntryIndex, err := c.raft.log.GetLastIndex()
+	lastLogEntryTerm := uint64(0)
+
+	if err == nil {
+		lastLogEntry, err := c.raft.log.ReadAndDeserialize(lastLogEntryIndex)
+
+		if err == nil {
+			lastLogEntryTerm = lastLogEntry.Term
+		}
+	}
 
 	c.raft.mu.Unlock()
 
@@ -161,14 +169,15 @@ func (c *CandidateRole) HandlePreVote(term uint64, candidateId string, lastLogEn
 		return currentTerm, false
 	}
 
-	myLastLogEntry, ok := c.raft.store.log.Last()
-
-	myLastLogEntryIndex := uint64(0)
+	myLastLogEntryIndex, err := c.raft.log.GetLastIndex()
 	myLastLogEntryTerm := uint64(0)
 
-	if ok {
-		myLastLogEntryIndex = myLastLogEntry.Index
-		myLastLogEntryTerm = myLastLogEntry.Term
+	if err == nil {
+		myLastLogEntry, err := c.raft.log.ReadAndDeserialize(lastLogEntryIndex)
+
+		if err == nil {
+			myLastLogEntryTerm = myLastLogEntry.Term
+		}
 	}
 
 	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {

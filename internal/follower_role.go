@@ -117,14 +117,15 @@ func (f *FollowerRole) HandlePreVote(term uint64, candidateId string, lastLogEnt
 		return currentTerm, false
 	}
 
-	myLastLogEntry, ok := f.raft.store.log.Last()
-
-	myLastLogEntryIndex := uint64(0)
+	myLastLogEntryIndex, err := f.raft.log.GetLastIndex()
 	myLastLogEntryTerm := uint64(0)
 
-	if ok {
-		myLastLogEntryIndex = myLastLogEntry.Index
-		myLastLogEntryTerm = myLastLogEntry.Term
+	if err == nil {
+		myLastLogEntry, err := f.raft.log.ReadAndDeserialize(lastLogEntryIndex)
+
+		if err == nil {
+			myLastLogEntryTerm = myLastLogEntry.Term
+		}
 	}
 
 	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {
@@ -163,14 +164,15 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 		return currentTerm, false
 	}
 
-	myLastLogEntry, ok := f.raft.store.log.Last()
-
-	myLastLogEntryIndex := uint64(0)
+	myLastLogEntryIndex, err := f.raft.log.GetLastIndex()
 	myLastLogEntryTerm := uint64(0)
 
-	if ok {
-		myLastLogEntryIndex = myLastLogEntry.Index
-		myLastLogEntryTerm = myLastLogEntry.Term
+	if err == nil {
+		myLastLogEntry, err := f.raft.log.ReadAndDeserialize(lastLogEntryIndex)
+
+		if err == nil {
+			myLastLogEntryTerm = myLastLogEntry.Term
+		}
 	}
 
 	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {

@@ -46,7 +46,7 @@ func (l *LeaderRole) OnEnter(term uint64) {
 		l.raft.store.matchIndex = make(map[string]uint64, len(l.raft.nodes))
 	}
 
-	lastLogEntryIndex, _ := l.raft.store.log.LastIndex()
+	lastLogEntryIndex, _ := l.raft.log.GetLastIndex()
 
 	for _, p := range l.raft.nodes {
 		if p == l.raft.id {
@@ -62,16 +62,24 @@ func (l *LeaderRole) OnEnter(term uint64) {
 
 	logEntry := LogEntry{
 		Data:  nil,
-		Index: lastLogEntryIndex + 1,
+		Index: 0,
 		Term:  term,
 	}
 
-	if err := l.raft.store.log.Append([]LogEntry{logEntry}); err == nil {
-		if lastLogEntry, ok := l.raft.store.log.Last(); ok {
-			l.raft.store.matchIndex[l.raft.id] = lastLogEntry.Index
-			l.raft.store.nextIndex[l.raft.id] = lastLogEntry.Index + 1
-		}
+	_, err := l.raft.log.SerializeAndWrite(&logEntry)
+
+	if err != nil {
+		// TODO
 	}
+
+	lastLogEntryIndex, err = l.raft.log.GetLastIndex()
+
+	if err != nil {
+		// TODO
+	}
+
+	l.raft.store.matchIndex[l.raft.id] = lastLogEntryIndex
+	l.raft.store.nextIndex[l.raft.id] = lastLogEntryIndex + 1
 
 	l.sendAppendEntriesToAllNodesLocked()
 
@@ -164,19 +172,21 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 
 	currentTerm := l.raft.store.GetCurrentTerm()
 
-	lastLogEntryIndex, _ := l.raft.store.log.LastIndex()
-
 	logEntry := LogEntry{
 		Data:  data,
-		Index: lastLogEntryIndex + 1,
+		Index: 0,
 		Term:  currentTerm,
 	}
 
-	l.raft.store.log.Append([]LogEntry{logEntry})
+	index, err := l.raft.log.SerializeAndWrite(&logEntry)
+
+	if err != nil {
+		return nil, err
+	}
 
 	ch := make(chan any, 1)
 
-	l.raft.pending[logEntry.Index] = append(l.raft.pending[logEntry.Index], ch)
+	l.raft.pending[index] = append(l.raft.pending[index], ch)
 
 	l.sendAppendEntriesToAllNodesLocked()
 
@@ -188,7 +198,7 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 	case <-ctx.Done():
 		l.raft.mu.Lock()
 
-		ws := l.raft.pending[logEntry.Index]
+		ws := l.raft.pending[index]
 		if len(ws) > 0 {
 			for i := range ws {
 				if ws[i] == ch {
@@ -198,9 +208,9 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 				}
 			}
 			if len(ws) > 0 {
-				l.raft.pending[logEntry.Index] = ws
+				l.raft.pending[index] = ws
 			} else {
-				delete(l.raft.pending, logEntry.Index)
+				delete(l.raft.pending, index)
 			}
 		}
 
@@ -237,7 +247,13 @@ func (l *LeaderRole) maybeAdvanceCommit() {
 		return
 	}
 
-	if termAtCandidate, ok := l.raft.store.log.GetTerm(candidate); !ok || termAtCandidate != currentTerm {
+	logEntry, err := l.raft.log.ReadAndDeserialize(candidate)
+
+	if err != nil {
+		return
+	}
+
+	if logEntry.Term != currentTerm {
 		return
 	}
 
@@ -255,7 +271,7 @@ func (l *LeaderRole) resetHeartbeatTimer() {
 func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 	currentTerm := l.raft.store.GetCurrentTerm()
 
-	lastLogEntryIndex, _ := l.raft.store.log.LastIndex()
+	lastLogEntryIndex, _ := l.raft.log.GetLastIndex()
 
 	for _, node := range l.raft.nodes {
 		if node == l.raft.id {
@@ -277,7 +293,11 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 		var prevLogEntryTerm uint64
 
 		if prevLogEntryIndex > 0 {
-			prevLogEntryTerm, _ = l.raft.store.log.GetTerm(prevLogEntryIndex)
+			logEntry, err := l.raft.log.ReadAndDeserialize(prevLogEntryIndex)
+
+			if err == nil {
+				prevLogEntryTerm = logEntry.Term
+			}
 		}
 
 		var entries []LogEntry
@@ -294,8 +314,10 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 			entries = make([]LogEntry, 0, to-next+1)
 
 			for i := next; i <= to; i++ {
-				if e, ok := l.raft.store.log.Get(i); ok {
-					entries = append(entries, *e)
+				logEntry, err := l.raft.log.ReadAndDeserialize(i)
+
+				if err == nil {
+					entries = append(entries, *logEntry)
 				} else {
 					break
 				}

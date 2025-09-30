@@ -5,6 +5,8 @@ import (
 	"math/rand/v2"
 	"sync"
 	"time"
+
+	golog "github.com/hirebarend/go-log"
 )
 
 type RaftRole interface {
@@ -40,6 +42,7 @@ type Raft struct {
 	heartbeatDeadline  uint64
 	id                 string
 	leaderId           string
+	log                *golog.Log[LogEntry]
 	mu                 *sync.Mutex
 	nodes              []string
 	pending            map[uint64][]chan any
@@ -65,6 +68,7 @@ func NewRaft(id string, nodes []string, store *Store, transport *Transport, fsm 
 		heartbeatDeadline:  0 + 15,
 		id:                 id,
 		leaderId:           "",
+		log:                golog.NewLog[LogEntry]("data", 64<<20),
 		mu:                 mu,
 		nodes:              nodes,
 		pending:            make(map[uint64][]chan any),
@@ -129,9 +133,9 @@ func (r *Raft) StartApplier() {
 
 		r.mu.Unlock()
 
-		logEntry, ok := r.store.log.Get(idx)
+		logEntry, err := r.log.ReadAndDeserialize(idx)
 
-		if !ok {
+		if err != nil {
 			return
 		}
 
@@ -159,9 +163,9 @@ func (r *Raft) isLogEntryOkay(index uint64, term uint64) bool {
 		return true
 	}
 
-	prevLogEntry, ok := r.store.log.Get(index)
+	prevLogEntry, err := r.log.ReadAndDeserialize(index)
 
-	if !ok || prevLogEntry == nil || prevLogEntry.Term != term {
+	if err != nil || prevLogEntry == nil || prevLogEntry.Term != term {
 		return false
 	}
 
@@ -180,10 +184,19 @@ func (r *Raft) appendEntriesLocked(prevLogEntryIndex uint64, logEntries []LogEnt
 	for i, entry := range logEntries {
 		idx := prevLogEntryIndex + 1 + uint64(i)
 
-		if logEntryTermAtIdx, ok := r.store.log.GetTerm(idx); ok {
-			if logEntryTermAtIdx != entry.Term {
-				r.store.log.Truncate(idx)
-				r.store.log.Append(logEntries[i:])
+		logEntryAtIdx, err := r.log.ReadAndDeserialize(idx)
+
+		if err == nil {
+			if logEntryAtIdx.Term != entry.Term {
+				// r.store.log.Truncate(idx)
+
+				for _, logEntry := range logEntries[i:] {
+					_, err := r.log.SerializeAndWrite(&logEntry)
+
+					if err != nil {
+						break
+					}
+				}
 
 				return
 			}
@@ -191,7 +204,13 @@ func (r *Raft) appendEntriesLocked(prevLogEntryIndex uint64, logEntries []LogEnt
 			continue
 		}
 
-		r.store.log.Append(logEntries[i:])
+		for _, logEntry := range logEntries[i:] {
+			_, err := r.log.SerializeAndWrite(&logEntry)
+
+			if err != nil {
+				break
+			}
+		}
 
 		return
 	}
@@ -202,9 +221,19 @@ func (r *Raft) setCommitIndexLocked(commitIndex uint64) {
 		return
 	}
 
-	logEntry, ok := r.store.log.Last()
+	lastLogEntryIndex, err := r.log.GetLastIndex()
 
-	if !ok {
+	if err != nil {
+		return
+	}
+
+	if lastLogEntryIndex == 0 {
+		return
+	}
+
+	logEntry, err := r.log.ReadAndDeserialize(lastLogEntryIndex)
+
+	if err != nil {
 		return
 	}
 

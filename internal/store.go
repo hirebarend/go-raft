@@ -8,7 +8,7 @@ type Store struct {
 	votedFor string
 
 	// persistent
-	log *Log
+	// log *Log
 
 	// volatile
 	commitIndex uint64
@@ -27,7 +27,7 @@ func NewStore(log *Log) *Store {
 	return &Store{
 		currentTerm: 0,
 		votedFor:    "",
-		log:         log,
+		// log:         log,
 		commitIndex: 0,
 		lastApplied: 0,
 		nextIndex:   nil, // TODO:
