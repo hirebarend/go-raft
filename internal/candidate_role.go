@@ -31,11 +31,13 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 	id := c.raft.id
 
 	if numberOfVotes > len(nodes)/2 {
-		c.raft.role = NewLeaderRole(c.raft)
+		leaderRole := NewLeaderRole(c.raft)
 
-		c.raft.role.OnEnter(currentTerm)
+		c.raft.role = leaderRole
 
 		c.raft.mu.Unlock()
+
+		leaderRole.OnEnter(currentTerm)
 
 		return
 	}
@@ -56,11 +58,13 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 			c.raft.mu.Lock()
 
 			if term > c.raft.store.GetCurrentTerm() {
-				c.raft.role = NewFollowerRole(c.raft)
+				followerRole := NewFollowerRole(c.raft)
+
+				c.raft.role = followerRole
 
 				c.raft.mu.Unlock()
 
-				c.raft.role.OnEnter(term)
+				followerRole.OnEnter(term)
 
 				return
 			}
@@ -80,11 +84,13 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 			numberOfVotes++
 
 			if numberOfVotes > numberOfNodes/2 {
-				c.raft.role = NewLeaderRole(c.raft)
+				leaderRole := NewLeaderRole(c.raft)
+
+				c.raft.role = leaderRole
 
 				c.raft.mu.Unlock()
 
-				c.raft.role.OnEnter(t)
+				leaderRole.OnEnter(currentTerm)
 
 				return
 			}
@@ -100,9 +106,15 @@ func (c *CandidateRole) Tick() {
 	c.raft.mu.Lock()
 
 	if c.raft.ticks >= c.raft.electionDeadline {
+		currentTerm := c.raft.store.GetCurrentTerm()
+
+		candidateRole := NewCandidateRole(c.raft)
+
+		c.raft.role = candidateRole
+
 		c.raft.mu.Unlock()
 
-		c.OnEnter(c.raft.store.GetCurrentTerm())
+		candidateRole.OnEnter(currentTerm)
 
 		return
 	}
@@ -128,13 +140,15 @@ func (c *CandidateRole) HandleAppendEntries(
 		return currentTerm, false
 	}
 
-	c.raft.role = NewFollowerRole(c.raft)
+	followerRole := NewFollowerRole(c.raft)
+
+	c.raft.role = followerRole
 
 	c.raft.mu.Unlock()
 
-	c.raft.role.OnEnter(term)
+	followerRole.OnEnter(term)
 
-	return c.raft.role.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
+	return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 }
 
 func (c *CandidateRole) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {
@@ -173,13 +187,15 @@ func (c *CandidateRole) HandleRequestVote(term uint64, candidateId string, lastL
 		return currentTerm, false
 	}
 
-	c.raft.role = NewFollowerRole(c.raft)
+	followerRole := NewFollowerRole(c.raft)
+
+	c.raft.role = followerRole
 
 	c.raft.mu.Unlock()
 
-	c.raft.role.OnEnter(term)
+	followerRole.OnEnter(term)
 
-	return c.raft.role.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
+	return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 }
 
 func (c *CandidateRole) HandlePropose(ctx context.Context, data []byte) (any, error) {

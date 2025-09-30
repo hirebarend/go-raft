@@ -44,11 +44,13 @@ func (f *FollowerRole) Tick() {
 	if f.raft.ticks >= f.raft.electionDeadline {
 		currentTerm := f.raft.store.GetCurrentTerm()
 
-		f.raft.role = NewCandidateRole(f.raft)
+		candidateRole := NewCandidateRole(f.raft)
+
+		f.raft.role = candidateRole
 
 		f.raft.mu.Unlock()
 
-		f.raft.role.OnEnter(currentTerm)
+		candidateRole.OnEnter(currentTerm)
 
 		return
 	}
@@ -75,11 +77,15 @@ func (f *FollowerRole) HandleAppendEntries(
 	}
 
 	if term > currentTerm {
+		followerRole := NewFollowerRole(f.raft)
+
+		f.raft.role = followerRole
+
 		f.raft.mu.Unlock()
 
-		f.OnEnter(term)
+		followerRole.OnEnter(term)
 
-		return f.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
+		return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 	}
 
 	f.raft.leaderId = leaderId
@@ -140,11 +146,15 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 	}
 
 	if term > currentTerm {
+		followerRole := NewFollowerRole(f.raft)
+
+		f.raft.role = followerRole
+
 		f.raft.mu.Unlock()
 
-		f.OnEnter(term)
+		followerRole.OnEnter(term)
 
-		return f.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
+		return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 	}
 
 	if f.raft.store.GetVotedFor() != "" && f.raft.store.GetVotedFor() != candidateId {

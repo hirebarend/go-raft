@@ -308,12 +308,14 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 			l.raft.mu.Lock()
 
 			if term > l.raft.store.GetCurrentTerm() {
-				l.raft.role = NewFollowerRole(l.raft)
-				newRole := l.raft.role
+				followerRole := NewFollowerRole(l.raft)
+
+				l.raft.role = followerRole
 
 				l.raft.mu.Unlock()
 
-				newRole.OnEnter(term)
+				followerRole.OnEnter(term)
+
 				return
 			}
 
