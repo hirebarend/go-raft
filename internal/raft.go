@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -21,7 +22,7 @@ type RaftRole interface {
 		prevLogEntryTerm uint64,
 		logEntries []LogEntry,
 		leaderCommit uint64,
-	) (uint64, bool)
+	) (uint64, bool, uint64, uint64)
 
 	HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool)
 
@@ -53,7 +54,7 @@ type Raft struct {
 	transport          *Transport
 }
 
-func NewRaft(id string, nodes []string, store *Store, transport *Transport, fsm *FSM) *Raft {
+func NewRaft(id string, nodes []string, log *golog.Log[LogEntry], store *Store, transport *Transport, fsm *FSM) *Raft {
 	seed := uint64(time.Now().UnixNano())
 
 	mu := &sync.Mutex{}
@@ -68,7 +69,7 @@ func NewRaft(id string, nodes []string, store *Store, transport *Transport, fsm 
 		heartbeatDeadline:  0 + 15,
 		id:                 id,
 		leaderId:           "",
-		log:                golog.NewLog[LogEntry]("data", 64<<20),
+		log:                log,
 		mu:                 mu,
 		nodes:              nodes,
 		pending:            make(map[uint64][]chan any),
@@ -79,7 +80,9 @@ func NewRaft(id string, nodes []string, store *Store, transport *Transport, fsm 
 		transport:          transport,
 	}
 
-	raft.role = NewCandidateRole(&raft)
+	raft.becomeFollower()
+
+	raft.role.OnEnter(0)
 
 	raft.resetElectionTimer()
 
@@ -103,7 +106,7 @@ func (r *Raft) HandleAppendEntries(
 	prevLogEntryTerm uint64,
 	logEntries []LogEntry,
 	leaderCommit uint64,
-) (uint64, bool) {
+) (uint64, bool, uint64, uint64) {
 	return r.role.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 }
 
@@ -158,18 +161,36 @@ func (r *Raft) StartApplier() {
 	}
 }
 
-func (r *Raft) isLogEntryOkay(index uint64, term uint64) bool {
-	if index == 0 {
-		return true
+func (r *Raft) becomeCandidate() *CandidateRole {
+	fmt.Printf("[%v] %v -> candidate\n", r.id, r.role.GetType())
+
+	role := NewCandidateRole(r)
+
+	r.role = role
+
+	return role
+}
+
+func (r *Raft) becomeFollower() *FollowerRole {
+	if r.role != nil {
+		fmt.Printf("[%v] %v -> follower\n", r.id, r.role.GetType())
 	}
 
-	prevLogEntry, err := r.log.ReadAndDeserialize(index)
+	role := NewFollowerRole(r)
 
-	if err != nil || prevLogEntry == nil || prevLogEntry.Term != term {
-		return false
-	}
+	r.role = role
 
-	return true
+	return role
+}
+
+func (r *Raft) becomeLeader() *LeaderRole {
+	fmt.Printf("[%v] %v -> leader\n", r.id, r.role.GetType())
+
+	role := NewLeaderRole(r)
+
+	r.role = role
+
+	return role
 }
 
 func (r *Raft) resetElectionTimer() {
@@ -188,14 +209,18 @@ func (r *Raft) appendEntriesLocked(prevLogEntryIndex uint64, logEntries []LogEnt
 
 		if err == nil {
 			if logEntryAtIdx.Term != entry.Term {
-				// r.store.log.Truncate(idx)
+				err := r.log.TruncateFrom(idx)
 
-				for _, logEntry := range logEntries[i:] {
-					_, err := r.log.SerializeAndWrite(&logEntry)
+				if err == nil {
+					for _, logEntry := range logEntries[i:] {
+						_, err := r.log.SerializeAndWrite(&logEntry)
 
-					if err != nil {
-						break
+						if err != nil {
+							break
+						}
 					}
+
+					r.log.Commit() // TODO
 				}
 
 				return
@@ -211,6 +236,8 @@ func (r *Raft) appendEntriesLocked(prevLogEntryIndex uint64, logEntries []LogEnt
 				break
 			}
 		}
+
+		r.log.Commit() // TODO
 
 		return
 	}
@@ -231,19 +258,15 @@ func (r *Raft) setCommitIndexLocked(commitIndex uint64) {
 		return
 	}
 
-	logEntry, err := r.log.ReadAndDeserialize(lastLogEntryIndex)
+	if lastLogEntryIndex > r.store.commitIndex {
+		r.store.commitIndex = lastLogEntryIndex
 
-	if err != nil {
-		return
-	}
-
-	if logEntry.Index > r.store.commitIndex {
-		r.store.commitIndex = logEntry.Index
 		r.cond.Signal()
 
 		return
 	}
 
 	r.store.commitIndex = commitIndex
+
 	r.cond.Signal()
 }

@@ -31,9 +31,7 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 	id := c.raft.id
 
 	if numberOfVotes > len(nodes)/2 {
-		leaderRole := NewLeaderRole(c.raft)
-
-		c.raft.role = leaderRole
+		leaderRole := c.raft.becomeLeader()
 
 		c.raft.mu.Unlock()
 
@@ -42,16 +40,7 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 		return
 	}
 
-	lastLogEntryIndex, err := c.raft.log.GetLastIndex()
-	lastLogEntryTerm := uint64(0)
-
-	if err == nil {
-		lastLogEntry, err := c.raft.log.ReadAndDeserialize(lastLogEntryIndex)
-
-		if err == nil {
-			lastLogEntryTerm = lastLogEntry.Term
-		}
-	}
+	lastLogEntryIndex, lastLogEntryTerm := GetLastLogEntryIndexAndTerm(c.raft.log)
 
 	c.raft.mu.Unlock()
 
@@ -63,12 +52,14 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 		go func(n string, t uint64, cid string, llei uint64, llet uint64, numberOfNodes int) {
 			term, voteGranted := c.raft.transport.RequestVote(n, t, cid, llei, llet)
 
+			fmt.Printf("[%v] c.raft.transport.RequestVote => %v, %v\n", n, term, voteGranted)
+
 			c.raft.mu.Lock()
 
 			if term > c.raft.store.GetCurrentTerm() {
-				followerRole := NewFollowerRole(c.raft)
+				fmt.Printf("[%v] c.raft.transport.RequestVote => term is greater than current term\n", n)
 
-				c.raft.role = followerRole
+				followerRole := c.raft.becomeFollower()
 
 				c.raft.mu.Unlock()
 
@@ -78,12 +69,16 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 			}
 
 			if !voteGranted || term != t {
+				fmt.Printf("[%v] c.raft.transport.RequestVote => vote not granted or term changed\n", n)
+
 				c.raft.mu.Unlock()
 
 				return
 			}
 
 			if c.raft.role.GetType() != "candidate" || c.raft.store.GetCurrentTerm() != t {
+				fmt.Printf("[%v] c.raft.transport.RequestVote => no longer candidate (%v)\n", n, c.raft.role.GetType())
+
 				c.raft.mu.Unlock()
 
 				return
@@ -92,13 +87,11 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 			numberOfVotes++
 
 			if numberOfVotes > numberOfNodes/2 {
-				leaderRole := NewLeaderRole(c.raft)
-
-				c.raft.role = leaderRole
+				leaderRole := c.raft.becomeLeader()
 
 				c.raft.mu.Unlock()
 
-				leaderRole.OnEnter(currentTerm)
+				leaderRole.OnEnter(term)
 
 				return
 			}
@@ -116,9 +109,7 @@ func (c *CandidateRole) Tick() {
 	if c.raft.ticks >= c.raft.electionDeadline {
 		currentTerm := c.raft.store.GetCurrentTerm()
 
-		candidateRole := NewCandidateRole(c.raft)
-
-		c.raft.role = candidateRole
+		candidateRole := c.raft.becomeCandidate()
 
 		c.raft.mu.Unlock()
 
@@ -137,7 +128,7 @@ func (c *CandidateRole) HandleAppendEntries(
 	prevLogEntryTerm uint64,
 	logEntries []LogEntry,
 	leaderCommit uint64,
-) (uint64, bool) {
+) (uint64, bool, uint64, uint64) {
 	c.raft.mu.Lock()
 
 	currentTerm := c.raft.store.GetCurrentTerm()
@@ -145,12 +136,10 @@ func (c *CandidateRole) HandleAppendEntries(
 	if term < currentTerm {
 		c.raft.mu.Unlock()
 
-		return currentTerm, false
+		return currentTerm, false, 0, 0
 	}
 
-	followerRole := NewFollowerRole(c.raft)
-
-	c.raft.role = followerRole
+	followerRole := c.raft.becomeFollower()
 
 	c.raft.mu.Unlock()
 
@@ -169,16 +158,7 @@ func (c *CandidateRole) HandlePreVote(term uint64, candidateId string, lastLogEn
 		return currentTerm, false
 	}
 
-	myLastLogEntryIndex, err := c.raft.log.GetLastIndex()
-	myLastLogEntryTerm := uint64(0)
-
-	if err == nil {
-		myLastLogEntry, err := c.raft.log.ReadAndDeserialize(lastLogEntryIndex)
-
-		if err == nil {
-			myLastLogEntryTerm = myLastLogEntry.Term
-		}
-	}
+	myLastLogEntryIndex, myLastLogEntryTerm := GetLastLogEntryIndexAndTerm(c.raft.log)
 
 	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {
 		return currentTerm, false
@@ -193,12 +173,12 @@ func (c *CandidateRole) HandleRequestVote(term uint64, candidateId string, lastL
 	currentTerm := c.raft.store.GetCurrentTerm()
 
 	if term <= currentTerm {
+		c.raft.mu.Unlock()
+
 		return currentTerm, false
 	}
 
-	followerRole := NewFollowerRole(c.raft)
-
-	c.raft.role = followerRole
+	followerRole := c.raft.becomeFollower()
 
 	c.raft.mu.Unlock()
 

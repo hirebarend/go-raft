@@ -26,10 +26,12 @@ func (f *FollowerRole) OnEnter(term uint64) {
 
 	if term > currentTerm {
 		f.raft.store.SetCurrentTerm(term)
+
 		f.raft.store.SetVotedFor("")
 	}
 
 	f.raft.resetElectionTimer()
+
 	f.raft.leaderId = ""
 
 	f.raft.mu.Unlock()
@@ -44,9 +46,7 @@ func (f *FollowerRole) Tick() {
 	if f.raft.ticks >= f.raft.electionDeadline {
 		currentTerm := f.raft.store.GetCurrentTerm()
 
-		candidateRole := NewCandidateRole(f.raft)
-
-		f.raft.role = candidateRole
+		candidateRole := f.raft.becomeCandidate()
 
 		f.raft.mu.Unlock()
 
@@ -65,7 +65,7 @@ func (f *FollowerRole) HandleAppendEntries(
 	prevLogEntryTerm uint64,
 	logEntries []LogEntry,
 	leaderCommit uint64,
-) (uint64, bool) {
+) (uint64, bool, uint64, uint64) {
 	f.raft.mu.Lock()
 
 	currentTerm := f.raft.store.GetCurrentTerm()
@@ -73,13 +73,11 @@ func (f *FollowerRole) HandleAppendEntries(
 	if term < currentTerm {
 		f.raft.mu.Unlock()
 
-		return currentTerm, false
+		return currentTerm, false, 0, 0
 	}
 
 	if term > currentTerm {
-		followerRole := NewFollowerRole(f.raft)
-
-		f.raft.role = followerRole
+		followerRole := f.raft.becomeFollower()
 
 		f.raft.mu.Unlock()
 
@@ -92,10 +90,42 @@ func (f *FollowerRole) HandleAppendEntries(
 
 	f.raft.resetElectionTimer()
 
-	if !f.raft.isLogEntryOkay(prevLogEntryIndex, prevLogEntryTerm) {
+	lastIndex, _ := f.raft.log.GetLastIndex()
+
+	if prevLogEntryIndex > lastIndex {
 		f.raft.mu.Unlock()
 
-		return currentTerm, false
+		return currentTerm, false, lastIndex + 1, 0
+	}
+
+	if prevLogEntryIndex > 0 {
+		prev, err := f.raft.log.ReadAndDeserialize(prevLogEntryIndex)
+
+		if err != nil || prev == nil {
+			f.raft.mu.Unlock()
+
+			return currentTerm, false, prevLogEntryIndex, 0
+		}
+
+		if prev.Term != prevLogEntryTerm {
+			conflictTerm := prev.Term
+
+			conflictIndex := prevLogEntryIndex
+
+			for conflictIndex > 1 {
+				e, err := f.raft.log.ReadAndDeserialize(conflictIndex - 1)
+
+				if err != nil || e == nil || e.Term != conflictTerm {
+					break
+				}
+
+				conflictIndex--
+			}
+
+			f.raft.mu.Unlock()
+
+			return currentTerm, false, conflictIndex, conflictTerm
+		}
 	}
 
 	f.raft.appendEntriesLocked(prevLogEntryIndex, logEntries)
@@ -104,7 +134,7 @@ func (f *FollowerRole) HandleAppendEntries(
 
 	f.raft.mu.Unlock()
 
-	return currentTerm, true
+	return currentTerm, true, 0, 0
 }
 
 func (f *FollowerRole) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {
@@ -117,16 +147,7 @@ func (f *FollowerRole) HandlePreVote(term uint64, candidateId string, lastLogEnt
 		return currentTerm, false
 	}
 
-	myLastLogEntryIndex, err := f.raft.log.GetLastIndex()
-	myLastLogEntryTerm := uint64(0)
-
-	if err == nil {
-		myLastLogEntry, err := f.raft.log.ReadAndDeserialize(lastLogEntryIndex)
-
-		if err == nil {
-			myLastLogEntryTerm = myLastLogEntry.Term
-		}
-	}
+	myLastLogEntryIndex, myLastLogEntryTerm := GetLastLogEntryIndexAndTerm(f.raft.log)
 
 	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {
 		return currentTerm, false
@@ -147,9 +168,7 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 	}
 
 	if term > currentTerm {
-		followerRole := NewFollowerRole(f.raft)
-
-		f.raft.role = followerRole
+		followerRole := f.raft.becomeFollower()
 
 		f.raft.mu.Unlock()
 
@@ -164,16 +183,7 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 		return currentTerm, false
 	}
 
-	myLastLogEntryIndex, err := f.raft.log.GetLastIndex()
-	myLastLogEntryTerm := uint64(0)
-
-	if err == nil {
-		myLastLogEntry, err := f.raft.log.ReadAndDeserialize(lastLogEntryIndex)
-
-		if err == nil {
-			myLastLogEntryTerm = myLastLogEntry.Term
-		}
-	}
+	myLastLogEntryIndex, myLastLogEntryTerm := GetLastLogEntryIndexAndTerm(f.raft.log)
 
 	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {
 		f.raft.mu.Unlock()

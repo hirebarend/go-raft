@@ -7,9 +7,6 @@ type Store struct {
 	// persistent
 	votedFor string
 
-	// persistent
-	// log *Log
-
 	// volatile
 	commitIndex uint64
 
@@ -23,11 +20,10 @@ type Store struct {
 	matchIndex map[string]uint64
 }
 
-func NewStore(log *Log) *Store {
+func NewStore() *Store {
 	return &Store{
 		currentTerm: 0,
 		votedFor:    "",
-		// log:         log,
 		commitIndex: 0,
 		lastApplied: 0,
 		nextIndex:   nil, // TODO:

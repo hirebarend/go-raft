@@ -27,8 +27,10 @@ type AppendEntriesRequest struct {
 }
 
 type AppendEntriesResponse struct {
-	Term    uint64 `json:"term"`
-	Success bool   `json:"success"`
+	Term          uint64 `json:"term"`
+	Success       bool   `json:"success"`
+	ConflictIndex uint64 `json:"conflict_index"`
+	ConflictTerm  uint64 `json:"conflict_term"`
 }
 
 type PreVoteRequest struct {
@@ -83,7 +85,8 @@ func (t *Transport) AppendEntries(
 	prevLogTerm uint64,
 	entries []LogEntry,
 	leaderCommit uint64,
-) (uint64, bool) {
+) (uint64, bool, uint64, uint64) {
+	fmt.Printf("sending %v\n", len(entries))
 	appendEntriesRequest := AppendEntriesRequest{
 		Term:         term,
 		LeaderId:     leaderId,
@@ -96,7 +99,7 @@ func (t *Transport) AppendEntries(
 	data, err := json.Marshal(appendEntriesRequest)
 
 	if err != nil {
-		return term, false
+		return term, false, 0, 0
 	}
 
 	t.ensureClient()
@@ -109,7 +112,7 @@ func (t *Transport) AppendEntries(
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 
 	if err != nil {
-		return term, false
+		return term, false, 0, 0
 	}
 
 	request.Header.Set("Content-Type", "application/json")
@@ -117,7 +120,7 @@ func (t *Transport) AppendEntries(
 	response, err := t.client.Do(request)
 
 	if err != nil {
-		return term, false
+		return term, false, 0, 0
 	}
 
 	defer func() {
@@ -126,7 +129,7 @@ func (t *Transport) AppendEntries(
 	}()
 
 	if response.StatusCode != http.StatusOK {
-		return term, false
+		return term, false, 0, 0
 	}
 
 	const maxBody = 1 << 20
@@ -138,14 +141,14 @@ func (t *Transport) AppendEntries(
 	decoder := json.NewDecoder(reader)
 
 	if err := decoder.Decode(&appendEntriesResponse); err != nil {
-		return term, false
+		return term, false, 0, 0
 	}
 
 	if decoder.More() {
-		return term, false
+		return term, false, 0, 0
 	}
 
-	return appendEntriesResponse.Term, appendEntriesResponse.Success
+	return appendEntriesResponse.Term, appendEntriesResponse.Success, appendEntriesResponse.ConflictIndex, appendEntriesResponse.ConflictTerm
 }
 
 func (t *Transport) PreVote(

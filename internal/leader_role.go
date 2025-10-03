@@ -25,9 +25,7 @@ func (l *LeaderRole) OnEnter(term uint64) {
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	if currentTerm != term {
-		followerRole := NewFollowerRole(l.raft)
-
-		l.raft.role = followerRole
+		followerRole := l.raft.becomeFollower()
 
 		l.raft.mu.Unlock()
 
@@ -61,21 +59,34 @@ func (l *LeaderRole) OnEnter(term uint64) {
 	l.raft.store.nextIndex[l.raft.id] = lastLogEntryIndex + 1
 
 	logEntry := LogEntry{
-		Data:  nil,
-		Index: 0,
-		Term:  term,
+		Data: nil,
+		Term: term,
 	}
 
 	_, err := l.raft.log.SerializeAndWrite(&logEntry)
 
 	if err != nil {
-		// TODO
+		followerRole := l.raft.becomeFollower()
+
+		l.raft.mu.Unlock()
+
+		followerRole.OnEnter(term)
+
+		return
 	}
+
+	l.raft.log.Commit() // TODO
 
 	lastLogEntryIndex, err = l.raft.log.GetLastIndex()
 
 	if err != nil {
-		// TODO
+		followerRole := l.raft.becomeFollower()
+
+		l.raft.mu.Unlock()
+
+		followerRole.OnEnter(term)
+
+		return
 	}
 
 	l.raft.store.matchIndex[l.raft.id] = lastLogEntryIndex
@@ -108,7 +119,7 @@ func (l *LeaderRole) HandleAppendEntries(
 	prevLogEntryTerm uint64,
 	logEntries []LogEntry,
 	leaderCommit uint64,
-) (uint64, bool) {
+) (uint64, bool, uint64, uint64) {
 	l.raft.mu.Lock()
 
 	currentTerm := l.raft.store.GetCurrentTerm()
@@ -116,18 +127,16 @@ func (l *LeaderRole) HandleAppendEntries(
 	if term < currentTerm {
 		l.raft.mu.Unlock()
 
-		return currentTerm, false
+		return currentTerm, false, 0, 0
 	}
 
 	if term == currentTerm && leaderId == l.raft.id {
 		l.raft.mu.Unlock()
 
-		return currentTerm, false
+		return currentTerm, false, 0, 0
 	}
 
-	followerRole := NewFollowerRole(l.raft)
-
-	l.raft.role = followerRole
+	followerRole := l.raft.becomeFollower()
 
 	l.raft.mu.Unlock()
 
@@ -156,9 +165,7 @@ func (l *LeaderRole) HandleRequestVote(term uint64, candidateId string, lastLogE
 		return currentTerm, false
 	}
 
-	followerRole := NewFollowerRole(l.raft)
-
-	l.raft.role = followerRole
+	followerRole := l.raft.becomeFollower()
 
 	l.raft.mu.Unlock()
 
@@ -173,16 +180,19 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	logEntry := LogEntry{
-		Data:  data,
-		Index: 0,
-		Term:  currentTerm,
+		Data: data,
+		Term: currentTerm,
 	}
 
 	index, err := l.raft.log.SerializeAndWrite(&logEntry)
 
 	if err != nil {
+		l.raft.mu.Unlock()
+
 		return nil, err
 	}
+
+	l.raft.log.Commit() // TODO
 
 	ch := make(chan any, 1)
 
@@ -303,7 +313,7 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 		var entries []LogEntry
 
 		if next <= lastLogEntryIndex {
-			const maxBatch = 128
+			const maxBatch = 2 * 1024
 			to := lastLogEntryIndex
 			count := to - next + 1
 
@@ -325,14 +335,12 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 		}
 
 		go func(n string, t uint64, li string, plei uint64, plet uint64, le []LogEntry, lc uint64) {
-			term, success := l.raft.transport.AppendEntries(n, t, li, plei, plet, le, lc)
+			term, success, conflictIndex, conflictTerm := l.raft.transport.AppendEntries(n, t, li, plei, plet, le, lc)
 
 			l.raft.mu.Lock()
 
 			if term > l.raft.store.GetCurrentTerm() {
-				followerRole := NewFollowerRole(l.raft)
-
-				l.raft.role = followerRole
+				followerRole := l.raft.becomeFollower()
 
 				l.raft.mu.Unlock()
 
@@ -351,7 +359,7 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 				lastSent := plei
 
 				if len(le) > 0 {
-					lastSent = le[len(le)-1].Index
+					lastSent = plei + uint64(len(le))
 				}
 
 				if l.raft.store.matchIndex[n] < lastSent {
@@ -369,7 +377,21 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 				l.raft.mu.Unlock()
 			} else {
 				if l.raft.store.nextIndex[n] > 1 {
-					l.raft.store.nextIndex[n]--
+					if conflictTerm != 0 {
+						lastOfTerm := GetLastLogEntryIndexOfTerm(l.raft.log, conflictTerm)
+
+						if lastOfTerm > 0 {
+							l.raft.store.nextIndex[n] = lastOfTerm + 1
+						} else {
+							l.raft.store.nextIndex[n] = conflictIndex
+						}
+					} else {
+						l.raft.store.nextIndex[n] = conflictIndex
+					}
+
+					if l.raft.store.nextIndex[n] < 1 {
+						l.raft.store.nextIndex[n] = 1
+					}
 				}
 
 				l.raft.mu.Unlock()

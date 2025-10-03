@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	golog "github.com/hirebarend/go-log"
 	"github.com/hirebarend/raft-go/internal"
 )
 
@@ -22,6 +22,7 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	data := flag.String("data", "data", "")
 	nodes := flag.String("nodes", "127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083", "Port number to run the service on")
 	port := flag.Int("port", 8081, "Port number to run the service on")
 
@@ -29,8 +30,11 @@ func main() {
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
-	store := internal.NewStore(&internal.Log{})
-	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), store, &internal.Transport{}, internal.NewFSM())
+	log := golog.NewLog[internal.LogEntry](*data, 64<<20)
+	log.Load()
+
+	store := internal.NewStore()
+	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), log, store, &internal.Transport{}, internal.NewFSM())
 
 	r := gin.Default()
 
@@ -45,13 +49,15 @@ func main() {
 			return
 		}
 
-		term, success := raft.HandleAppendEntries(
+		term, success, conflictIndex, conflictTerm := raft.HandleAppendEntries(
 			request.Term, request.LeaderId, request.PrevLogIndex, request.PrevLogTerm, request.Entries, request.LeaderCommit,
 		)
 
 		c.JSON(http.StatusOK, internal.AppendEntriesResponse{
-			Term:    term,
-			Success: success,
+			Term:          term,
+			Success:       success,
+			ConflictIndex: conflictIndex,
+			ConflictTerm:  conflictTerm,
 		})
 	})
 
@@ -111,7 +117,7 @@ func main() {
 	go raft.StartApplier()
 
 	go func() {
-		ticker := time.NewTicker(10 * time.Millisecond) // TODO
+		ticker := time.NewTicker(100 * time.Millisecond) // TODO
 		defer ticker.Stop()
 
 		for {
@@ -126,7 +132,7 @@ func main() {
 
 	go func() {
 		if err := r.Run(addr); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %s\n", err)
+			// log.Fatalf("listen: %s\n", err)
 		}
 	}()
 
