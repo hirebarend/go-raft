@@ -6,12 +6,14 @@ import (
 )
 
 type LeaderRole struct {
-	raft *Raft
+	raft    *Raft
+	sending map[string]bool
 }
 
 func NewLeaderRole(raft *Raft) *LeaderRole {
 	return &LeaderRole{
-		raft: raft,
+		raft:    raft,
+		sending: make(map[string]bool, len(raft.nodes)),
 	}
 }
 
@@ -75,7 +77,7 @@ func (l *LeaderRole) OnEnter(term uint64) {
 		return
 	}
 
-	l.raft.log.Commit() // TODO
+	// l.raft.log.Commit() // TODO
 
 	lastLogEntryIndex, err = l.raft.log.GetLastIndex()
 
@@ -106,10 +108,14 @@ func (l *LeaderRole) OnExit() {
 
 func (l *LeaderRole) Tick() {
 	l.raft.mu.Lock()
-	l.sendAppendEntriesToAllNodesLocked()
-	l.raft.mu.Unlock()
 
-	l.resetHeartbeatTimer()
+	if l.raft.ticks >= l.raft.heartbeatDeadline {
+		l.sendAppendEntriesToAllNodesLocked()
+
+		l.resetHeartbeatTimer()
+	}
+
+	l.raft.mu.Unlock()
 }
 
 func (l *LeaderRole) HandleAppendEntries(
@@ -192,13 +198,13 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 		return nil, err
 	}
 
-	l.raft.log.Commit() // TODO
+	// l.raft.log.Commit() // TODO
 
 	ch := make(chan any, 1)
 
 	l.raft.pending[index] = append(l.raft.pending[index], ch)
 
-	l.sendAppendEntriesToAllNodesLocked()
+	// l.sendAppendEntriesToAllNodesLocked()
 
 	l.raft.mu.Unlock()
 
@@ -288,6 +294,12 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 			continue
 		}
 
+		if l.sending[node] {
+			continue
+		}
+
+		l.sending[node] = true
+
 		next := l.raft.store.nextIndex[node]
 
 		if next == 0 {
@@ -338,6 +350,10 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 			term, success, conflictIndex, conflictTerm := l.raft.transport.AppendEntries(n, t, li, plei, plet, le, lc)
 
 			l.raft.mu.Lock()
+
+			defer func() {
+				l.sending[n] = false
+			}()
 
 			if term > l.raft.store.GetCurrentTerm() {
 				followerRole := l.raft.becomeFollower()

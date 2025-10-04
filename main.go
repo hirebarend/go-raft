@@ -114,10 +114,24 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	go func() {
+		ticker := time.NewTicker(2000 * time.Millisecond) // TODO
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				log.Commit()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	go raft.StartApplier()
 
 	go func() {
-		ticker := time.NewTicker(100 * time.Millisecond) // TODO
+		ticker := time.NewTicker(85 * time.Millisecond) // TODO
 		defer ticker.Stop()
 
 		for {
@@ -137,4 +151,6 @@ func main() {
 	}()
 
 	<-ctx.Done()
+
+	log.Close()
 }
