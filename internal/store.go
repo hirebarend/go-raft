@@ -1,6 +1,10 @@
 package internal
 
+import "sync"
+
 type Store struct {
+	mu sync.RWMutex
+
 	// persistent
 	currentTerm uint64
 
@@ -12,12 +16,6 @@ type Store struct {
 
 	// volatile
 	lastApplied uint64
-
-	// volatile (leader)
-	nextIndex map[string]uint64
-
-	// volatile (leader)
-	matchIndex map[string]uint64
 }
 
 func NewStore() *Store {
@@ -26,16 +24,29 @@ func NewStore() *Store {
 		votedFor:    "",
 		commitIndex: 0,
 		lastApplied: 0,
-		nextIndex:   nil, // TODO:
-		matchIndex:  nil, // TODO:
 	}
 }
 
 func (s *Store) GetCurrentTerm() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.currentTerm
+}
+
+func (s *Store) IncrementCurrentTerm() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.currentTerm = s.currentTerm + 1
+
 	return s.currentTerm
 }
 
 func (s *Store) SetCurrentTerm(v uint64) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.currentTerm = v
 
 	return s.currentTerm

@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"fmt"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -34,24 +33,19 @@ type RaftRole interface {
 }
 
 type Raft struct {
-	cond               *sync.Cond
-	electionDeadline   uint64
-	electionTimeoutMin int
-	electionTimeoutMax int
-	fsm                *FSM
-	heartbeatInterval  uint64
-	heartbeatDeadline  uint64
-	id                 string
-	leaderId           string
-	log                *golog.Log[LogEntry]
-	mu                 *sync.Mutex
-	nodes              []string
-	pending            map[uint64][]chan any
-	rng                *rand.Rand
-	role               RaftRole
-	store              *Store
-	ticks              uint64
-	transport          *Transport
+	cond      *sync.Cond
+	fsm       *FSM
+	id        string
+	leaderId  string
+	log       *golog.Log[LogEntry]
+	mu        *sync.Mutex
+	nodes     []string
+	pending   map[uint64][]chan any
+	rng       *rand.Rand
+	role      RaftRole
+	roleMu    *sync.Mutex
+	store     *Store
+	transport *Transport
 }
 
 func NewRaft(id string, nodes []string, log *golog.Log[LogEntry], store *Store, transport *Transport, fsm *FSM) *Raft {
@@ -60,38 +54,29 @@ func NewRaft(id string, nodes []string, log *golog.Log[LogEntry], store *Store, 
 	mu := &sync.Mutex{}
 
 	raft := Raft{
-		cond:               sync.NewCond(mu),
-		electionDeadline:   0,
-		electionTimeoutMin: 15 * 5,
-		electionTimeoutMax: 15 * 6,
-		fsm:                fsm,
-		heartbeatInterval:  15,
-		heartbeatDeadline:  0 + 15,
-		id:                 id,
-		leaderId:           "",
-		log:                log,
-		mu:                 mu,
-		nodes:              nodes,
-		pending:            make(map[uint64][]chan any),
-		rng:                rand.New(rand.NewPCG(seed, seed>>1)),
-		role:               nil,
-		store:              store,
-		ticks:              0,
-		transport:          transport,
+		cond:      sync.NewCond(mu),
+		fsm:       fsm,
+		id:        id,
+		leaderId:  "",
+		log:       log,
+		mu:        mu,
+		nodes:     nodes,
+		pending:   make(map[uint64][]chan any),
+		rng:       rand.New(rand.NewPCG(seed, seed>>1)),
+		role:      nil,
+		roleMu:    &sync.Mutex{},
+		store:     store,
+		transport: transport,
 	}
 
 	raft.becomeFollower()
 
 	raft.role.OnEnter(0)
 
-	raft.resetElectionTimer()
-
 	return &raft
 }
 
 func (r *Raft) Tick() {
-	r.ticks++
-
 	r.role.Tick()
 }
 
@@ -130,143 +115,127 @@ func (r *Raft) StartApplier() {
 			r.cond.Wait()
 		}
 
-		r.store.lastApplied++
-
-		idx := r.store.lastApplied
+		start := r.store.lastApplied + 1
+		end := r.store.commitIndex
 
 		r.mu.Unlock()
 
-		logEntry, err := r.log.ReadAndDeserialize(idx)
+		results := make(map[uint64]any, end-start+1)
 
-		if err != nil {
-			return
+		for idx := start; idx <= end; idx++ {
+			logEntry, err := r.log.ReadAndDeserialize(idx)
+			if err != nil {
+				return
+			}
+
+			results[idx] = r.fsm.Apply(logEntry.Data)
 		}
 
-		result := r.fsm.Apply(logEntry.Data)
+		type notify struct {
+			chans  []chan any
+			result any
+		}
+
+		var toNotify []notify
 
 		r.mu.Lock()
 
-		if ws, ok := r.pending[idx]; ok {
-			delete(r.pending, idx)
+		r.store.lastApplied = end
 
-			for _, ch := range ws {
-				select {
-				case ch <- result:
-				default:
-				}
+		for idx := start; idx <= end; idx++ {
+			if ws, ok := r.pending[idx]; ok {
+				delete(r.pending, idx)
+				toNotify = append(toNotify, notify{
+					chans:  ws,
+					result: results[idx],
+				})
 			}
 		}
 
 		r.mu.Unlock()
+
+		for i := range toNotify {
+			ws := toNotify[i].chans
+			res := toNotify[i].result
+
+			for _, ch := range ws {
+				select {
+				case ch <- res:
+				default:
+				}
+			}
+		}
 	}
 }
 
 func (r *Raft) becomeCandidate() *CandidateRole {
-	fmt.Printf("[%v] %v -> candidate\n", r.id, r.role.GetType())
-
 	role := NewCandidateRole(r)
 
+	r.roleMu.Lock()
+
 	r.role = role
+
+	r.roleMu.Unlock()
 
 	return role
 }
 
 func (r *Raft) becomeFollower() *FollowerRole {
-	if r.role != nil {
-		fmt.Printf("[%v] %v -> follower\n", r.id, r.role.GetType())
-	}
-
 	role := NewFollowerRole(r)
 
+	r.roleMu.Lock()
+
 	r.role = role
+
+	r.roleMu.Unlock()
 
 	return role
 }
 
 func (r *Raft) becomeLeader() *LeaderRole {
-	fmt.Printf("[%v] %v -> leader\n", r.id, r.role.GetType())
-
 	role := NewLeaderRole(r)
+
+	r.roleMu.Lock()
 
 	r.role = role
 
-	return role
-}
+	r.roleMu.Unlock()
 
-func (r *Raft) resetElectionTimer() {
-	r.electionDeadline = r.ticks + uint64(r.electionTimeoutMin+r.rng.IntN(r.electionTimeoutMax-r.electionTimeoutMin+1))
+	return role
 }
 
 func logIsUpToDate(myIndex, myTerm, otherIndex, otherTerm uint64) bool {
 	return (otherTerm > myTerm) || (otherTerm == myTerm && otherIndex >= myIndex)
 }
 
-func (r *Raft) appendEntriesLocked(prevLogEntryIndex uint64, logEntries []LogEntry) {
-	for i, entry := range logEntries {
-		idx := prevLogEntryIndex + 1 + uint64(i)
+func (r *Raft) setCommitIndex(commitIndex uint64) {
+	r.mu.Lock()
 
-		logEntryAtIdx, err := r.log.ReadAndDeserialize(idx)
-
-		if err == nil {
-			if logEntryAtIdx.Term != entry.Term {
-				err := r.log.TruncateFrom(idx)
-
-				if err == nil {
-					for _, logEntry := range logEntries[i:] {
-						_, err := r.log.SerializeAndWrite(&logEntry)
-
-						if err != nil {
-							break
-						}
-					}
-
-					r.log.Commit() // TODO
-				}
-
-				return
-			}
-
-			continue
-		}
-
-		for _, logEntry := range logEntries[i:] {
-			_, err := r.log.SerializeAndWrite(&logEntry)
-
-			if err != nil {
-				break
-			}
-		}
-
-		r.log.Commit() // TODO
-
-		return
-	}
-}
-
-func (r *Raft) setCommitIndexLocked(commitIndex uint64) {
 	if commitIndex <= r.store.commitIndex {
+		r.mu.Unlock()
+
 		return
 	}
+
+	r.mu.Unlock()
 
 	lastLogEntryIndex, err := r.log.GetLastIndex()
 
-	if err != nil {
+	if err != nil || lastLogEntryIndex == 0 {
 		return
 	}
 
-	if lastLogEntryIndex == 0 {
-		return
+	if commitIndex > lastLogEntryIndex {
+		commitIndex = lastLogEntryIndex
 	}
 
-	if lastLogEntryIndex > r.store.commitIndex {
-		r.store.commitIndex = lastLogEntryIndex
+	r.mu.Lock()
+
+	if commitIndex > r.store.commitIndex {
+		r.store.commitIndex = commitIndex
 
 		r.cond.Signal()
-
-		return
 	}
 
-	r.store.commitIndex = commitIndex
-
-	r.cond.Signal()
+	r.mu.Unlock()
 }

@@ -42,6 +42,12 @@ func main() {
 		c.JSON(200, gin.H{"message": "pong"})
 	})
 
+	r.GET("/profiler", func(c *gin.Context) {
+		internal.StartProfiler()
+
+		c.JSON(200, gin.H{"message": "pong"})
+	})
+
 	r.POST("/append-entries", func(c *gin.Context) {
 		var request internal.AppendEntriesRequest
 		if err := c.ShouldBindJSON(&request); err != nil {

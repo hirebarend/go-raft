@@ -6,14 +6,22 @@ import (
 )
 
 type LeaderRole struct {
-	raft    *Raft
-	sending map[string]bool
+	raft              *Raft
+	heartbeatDeadline uint16
+	heartbeatTicks    uint16
+	nextIndex         map[string]uint64
+	matchIndex        map[string]uint64
+	sending           map[string]bool
 }
 
 func NewLeaderRole(raft *Raft) *LeaderRole {
 	return &LeaderRole{
-		raft:    raft,
-		sending: make(map[string]bool, len(raft.nodes)),
+		raft:              raft,
+		heartbeatDeadline: 15,
+		heartbeatTicks:    0,
+		matchIndex:        make(map[string]uint64, len(raft.nodes)),
+		nextIndex:         make(map[string]uint64, len(raft.nodes)),
+		sending:           make(map[string]bool, len(raft.nodes)),
 	}
 }
 
@@ -38,12 +46,12 @@ func (l *LeaderRole) OnEnter(term uint64) {
 
 	l.raft.leaderId = l.raft.id
 
-	if l.raft.store.nextIndex == nil {
-		l.raft.store.nextIndex = make(map[string]uint64, len(l.raft.nodes))
+	if l.nextIndex == nil {
+		l.nextIndex = make(map[string]uint64, len(l.raft.nodes))
 	}
 
-	if l.raft.store.matchIndex == nil {
-		l.raft.store.matchIndex = make(map[string]uint64, len(l.raft.nodes))
+	if l.matchIndex == nil {
+		l.matchIndex = make(map[string]uint64, len(l.raft.nodes))
 	}
 
 	lastLogEntryIndex, _ := l.raft.log.GetLastIndex()
@@ -53,12 +61,12 @@ func (l *LeaderRole) OnEnter(term uint64) {
 			continue
 		}
 
-		l.raft.store.nextIndex[p] = lastLogEntryIndex + 1
-		l.raft.store.matchIndex[p] = 0
+		l.nextIndex[p] = lastLogEntryIndex + 1
+		l.matchIndex[p] = 0
 	}
 
-	l.raft.store.matchIndex[l.raft.id] = lastLogEntryIndex
-	l.raft.store.nextIndex[l.raft.id] = lastLogEntryIndex + 1
+	l.matchIndex[l.raft.id] = lastLogEntryIndex
+	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
 
 	logEntry := LogEntry{
 		Data: nil,
@@ -91,8 +99,8 @@ func (l *LeaderRole) OnEnter(term uint64) {
 		return
 	}
 
-	l.raft.store.matchIndex[l.raft.id] = lastLogEntryIndex
-	l.raft.store.nextIndex[l.raft.id] = lastLogEntryIndex + 1
+	l.matchIndex[l.raft.id] = lastLogEntryIndex
+	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
 
 	l.sendAppendEntriesToAllNodesLocked()
 
@@ -107,9 +115,11 @@ func (l *LeaderRole) OnExit() {
 }
 
 func (l *LeaderRole) Tick() {
+	l.heartbeatTicks++
+
 	l.raft.mu.Lock()
 
-	if l.raft.ticks >= l.raft.heartbeatDeadline {
+	if l.heartbeatTicks >= l.heartbeatDeadline {
 		l.sendAppendEntriesToAllNodesLocked()
 
 		l.resetHeartbeatTimer()
@@ -242,7 +252,7 @@ func (l *LeaderRole) maybeAdvanceCommit() {
 	matches := make([]uint64, 0, len(l.raft.nodes))
 
 	for _, n := range l.raft.nodes {
-		matches = append(matches, l.raft.store.matchIndex[n])
+		matches = append(matches, l.matchIndex[n])
 	}
 
 	if len(matches) == 0 {
@@ -281,7 +291,7 @@ func (l *LeaderRole) maybeAdvanceCommit() {
 }
 
 func (l *LeaderRole) resetHeartbeatTimer() {
-	l.raft.heartbeatDeadline = l.raft.ticks + l.raft.heartbeatInterval
+	l.heartbeatTicks = 0
 }
 
 func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
@@ -300,7 +310,7 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 
 		l.sending[node] = true
 
-		next := l.raft.store.nextIndex[node]
+		next := l.nextIndex[node]
 
 		if next == 0 {
 			next = lastLogEntryIndex + 1
@@ -378,35 +388,35 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 					lastSent = plei + uint64(len(le))
 				}
 
-				if l.raft.store.matchIndex[n] < lastSent {
-					l.raft.store.matchIndex[n] = lastSent
+				if l.matchIndex[n] < lastSent {
+					l.matchIndex[n] = lastSent
 				}
 
 				next := lastSent + 1
 
-				if l.raft.store.nextIndex[n] < next {
-					l.raft.store.nextIndex[n] = next
+				if l.nextIndex[n] < next {
+					l.nextIndex[n] = next
 				}
 
 				l.maybeAdvanceCommit()
 
 				l.raft.mu.Unlock()
 			} else {
-				if l.raft.store.nextIndex[n] > 1 {
+				if l.nextIndex[n] > 1 {
 					if conflictTerm != 0 {
 						lastOfTerm := GetLastLogEntryIndexOfTerm(l.raft.log, conflictTerm)
 
 						if lastOfTerm > 0 {
-							l.raft.store.nextIndex[n] = lastOfTerm + 1
+							l.nextIndex[n] = lastOfTerm + 1
 						} else {
-							l.raft.store.nextIndex[n] = conflictIndex
+							l.nextIndex[n] = conflictIndex
 						}
 					} else {
-						l.raft.store.nextIndex[n] = conflictIndex
+						l.nextIndex[n] = conflictIndex
 					}
 
-					if l.raft.store.nextIndex[n] < 1 {
-						l.raft.store.nextIndex[n] = 1
+					if l.nextIndex[n] < 1 {
+						l.nextIndex[n] = 1
 					}
 				}
 

@@ -33,6 +33,8 @@ github.com/hirebarend/go-log v0.0.0-20250930121955-82ab1c480975 h1:MzZ7JKrQ9ZJDK
 github.com/hirebarend/go-log v0.0.0-20250930121955-82ab1c480975/go.mod h1:YkVo4pm9cI1DYazJ3ilg5VSMqpJypB1KUqUS3DJYiUo=
 github.com/hirebarend/go-log v0.0.0-20250930144417-6f1b126c025c h1:rwdl5DA1n7zBbvU/DRT65UpnFIE3CyckRBGKiLZQvyQ=
 github.com/hirebarend/go-log v0.0.0-20250930144417-6f1b126c025c/go.mod h1:YkVo4pm9cI1DYazJ3ilg5VSMqpJypB1KUqUS3DJYiUo=
+github.com/hirebarend/go-log v0.0.0-20251004194138-ed6736bb4153 h1:rHxiYELheQWvS9bbOLZqIkziMrmA0AysYRJb4TNLdDE=
+github.com/hirebarend/go-log v0.0.0-20251004194138-ed6736bb4153/go.mod h1:YkVo4pm9cI1DYazJ3ilg5VSMqpJypB1KUqUS3DJYiUo=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
 github.com/klauspost/cpuid/v2 v2.0.9/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
