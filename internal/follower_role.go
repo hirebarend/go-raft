@@ -38,11 +38,7 @@ func (f *FollowerRole) OnEnter(term uint64) {
 		f.raft.store.SetVotedFor("")
 	}
 
-	f.raft.mu.Lock()
-
-	f.raft.leaderId = "" // TODO
-
-	f.raft.mu.Unlock()
+	f.raft.store.SetLeaderId("")
 }
 
 func (f *FollowerRole) OnExit() {
@@ -84,11 +80,7 @@ func (f *FollowerRole) HandleAppendEntries(
 		return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 	}
 
-	f.raft.mu.Lock()
-
-	f.raft.leaderId = leaderId // TODO
-
-	f.raft.mu.Unlock()
+	f.raft.store.SetLeaderId(leaderId)
 
 	f.resetElectionTimer()
 

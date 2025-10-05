@@ -36,7 +36,6 @@ type Raft struct {
 	cond      *sync.Cond
 	fsm       *FSM
 	id        string
-	leaderId  string
 	log       *golog.Log[LogEntry]
 	mu        *sync.Mutex
 	nodes     []string
@@ -57,7 +56,6 @@ func NewRaft(id string, nodes []string, log *golog.Log[LogEntry], store *Store, 
 		cond:      sync.NewCond(mu),
 		fsm:       fsm,
 		id:        id,
-		leaderId:  "",
 		log:       log,
 		mu:        mu,
 		nodes:     nodes,
@@ -81,7 +79,7 @@ func (r *Raft) Tick() {
 }
 
 func (r *Raft) GetLeaderId() string {
-	return r.leaderId
+	return r.store.GetLeaderId()
 }
 
 func (r *Raft) HandleAppendEntries(
@@ -124,6 +122,7 @@ func (r *Raft) StartApplier() {
 
 		for idx := start; idx <= end; idx++ {
 			logEntry, err := r.log.ReadAndDeserialize(idx)
+
 			if err != nil {
 				return
 			}

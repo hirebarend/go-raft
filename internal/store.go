@@ -16,6 +16,8 @@ type Store struct {
 
 	// volatile
 	lastApplied uint64
+
+	leaderId string
 }
 
 func NewStore() *Store {
@@ -50,6 +52,16 @@ func (s *Store) SetCurrentTerm(v uint64) uint64 {
 	s.currentTerm = v
 
 	return s.currentTerm
+}
+
+func (s *Store) GetLeaderId() string {
+	return s.leaderId
+}
+
+func (s *Store) SetLeaderId(leaderId string) string {
+	s.leaderId = leaderId
+
+	return s.leaderId
 }
 
 func (s *Store) GetVotedFor() string {
