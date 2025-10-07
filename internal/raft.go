@@ -33,38 +33,38 @@ type RaftRole interface {
 }
 
 type Raft struct {
-	cond      *sync.Cond
-	fsm       *FSM
-	id        string
-	log       *golog.Log[LogEntry]
-	mu        *sync.Mutex
-	nodes     []string
-	pending   map[uint64][]chan any
-	rng       *rand.Rand
-	role      RaftRole
-	roleMu    *sync.Mutex
-	store     *Store
-	transport *Transport
+	applierMu   *sync.Mutex
+	applierCond *sync.Cond
+	fsm         *FSM
+	id          string
+	log         *golog.Log[LogEntry]
+	mu          *sync.Mutex
+	nodes       []string
+	rng         *rand.Rand
+	role        RaftRole
+	roleMu      *sync.Mutex
+	store       *Store
+	transport   *Transport
 }
 
 func NewRaft(id string, nodes []string, log *golog.Log[LogEntry], store *Store, transport *Transport, fsm *FSM) *Raft {
 	seed := uint64(time.Now().UnixNano())
 
-	mu := &sync.Mutex{}
+	applierMu := &sync.Mutex{}
 
 	raft := Raft{
-		cond:      sync.NewCond(mu),
-		fsm:       fsm,
-		id:        id,
-		log:       log,
-		mu:        mu,
-		nodes:     nodes,
-		pending:   make(map[uint64][]chan any),
-		rng:       rand.New(rand.NewPCG(seed, seed>>1)),
-		role:      nil,
-		roleMu:    &sync.Mutex{},
-		store:     store,
-		transport: transport,
+		applierCond: sync.NewCond(applierMu),
+		applierMu:   applierMu,
+		fsm:         fsm,
+		id:          id,
+		log:         log,
+		mu:          &sync.Mutex{},
+		nodes:       nodes,
+		rng:         rand.New(rand.NewPCG(seed, seed>>1)),
+		role:        nil,
+		roleMu:      &sync.Mutex{},
+		store:       store,
+		transport:   transport,
 	}
 
 	raft.becomeFollower()
@@ -105,67 +105,71 @@ func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
 	return r.role.HandlePropose(ctx, data)
 }
 
-func (r *Raft) StartApplier() {
-	for {
-		r.mu.Lock()
+// func (r *Raft) StartApplier() {
+// 	for {
+// 		r.applierMu.Lock()
 
-		for r.store.lastApplied >= r.store.commitIndex {
-			r.cond.Wait()
-		}
+// 		for r.store.lastApplied >= r.store.commitIndex {
+// 			r.applierCond.Wait()
+// 		}
 
-		start := r.store.lastApplied + 1
-		end := r.store.commitIndex
+// 		start := r.store.lastApplied + 1
+// 		end := r.store.commitIndex
 
-		r.mu.Unlock()
+// 		r.applierMu.Unlock()
 
-		results := make(map[uint64]any, end-start+1)
+// 		results := make(map[uint64]any, end-start+1)
 
-		for idx := start; idx <= end; idx++ {
-			logEntry, err := r.log.ReadAndDeserialize(idx)
+// 		for idx := start; idx <= end; idx++ {
+// 			logEntry, err := r.log.ReadAndDeserialize(idx)
 
-			if err != nil {
-				return
-			}
+// 			if err != nil {
+// 				return
+// 			}
 
-			results[idx] = r.fsm.Apply(logEntry.Data)
-		}
+// 			results[idx] = r.fsm.Apply(logEntry.Data)
+// 		}
 
-		type notify struct {
-			chans  []chan any
-			result any
-		}
+// 		type notify struct {
+// 			chans  []chan any
+// 			result any
+// 		}
 
-		var toNotify []notify
+// 		var toNotify []notify
 
-		r.mu.Lock()
+// 		r.applierMu.Lock()
 
-		r.store.lastApplied = end
+// 		r.mu.Lock()
 
-		for idx := start; idx <= end; idx++ {
-			if ws, ok := r.pending[idx]; ok {
-				delete(r.pending, idx)
-				toNotify = append(toNotify, notify{
-					chans:  ws,
-					result: results[idx],
-				})
-			}
-		}
+// 		r.store.lastApplied = end
 
-		r.mu.Unlock()
+// 		for idx := start; idx <= end; idx++ {
+// 			if ws, ok := r.pending[idx]; ok {
+// 				delete(r.pending, idx)
+// 				toNotify = append(toNotify, notify{
+// 					chans:  ws,
+// 					result: results[idx],
+// 				})
+// 			}
+// 		}
 
-		for i := range toNotify {
-			ws := toNotify[i].chans
-			res := toNotify[i].result
+// 		r.mu.Unlock()
 
-			for _, ch := range ws {
-				select {
-				case ch <- res:
-				default:
-				}
-			}
-		}
-	}
-}
+// 		r.applierMu.Unlock()
+
+// 		for i := range toNotify {
+// 			ws := toNotify[i].chans
+// 			res := toNotify[i].result
+
+// 			for _, ch := range ws {
+// 				select {
+// 				case ch <- res:
+// 				default:
+// 				}
+// 			}
+// 		}
+// 	}
+// }
 
 func (r *Raft) becomeCandidate() *CandidateRole {
 	role := NewCandidateRole(r)
@@ -208,16 +212,6 @@ func logIsUpToDate(myIndex, myTerm, otherIndex, otherTerm uint64) bool {
 }
 
 func (r *Raft) setCommitIndex(commitIndex uint64) {
-	r.mu.Lock()
-
-	if commitIndex <= r.store.commitIndex {
-		r.mu.Unlock()
-
-		return
-	}
-
-	r.mu.Unlock()
-
 	lastLogEntryIndex, err := r.log.GetLastIndex()
 
 	if err != nil || lastLogEntryIndex == 0 {
@@ -228,13 +222,14 @@ func (r *Raft) setCommitIndex(commitIndex uint64) {
 		commitIndex = lastLogEntryIndex
 	}
 
-	r.mu.Lock()
+	for {
+		current := r.store.commitIndex.Load()
 
-	if commitIndex > r.store.commitIndex {
-		r.store.commitIndex = commitIndex
-
-		r.cond.Signal()
+		if commitIndex <= current {
+			return
+		}
+		if r.store.commitIndex.CompareAndSwap(current, commitIndex) {
+			return // success
+		}
 	}
-
-	r.mu.Unlock()
 }

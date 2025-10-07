@@ -8,8 +8,8 @@ import (
 
 type FollowerRole struct {
 	raft             *Raft
-	electionDeadline uint16
-	electionTicks    uint16
+	electionDeadline int
+	electionTicks    int
 	mu               *sync.Mutex
 }
 
@@ -19,7 +19,7 @@ func NewFollowerRole(raft *Raft) *FollowerRole {
 
 	return &FollowerRole{
 		raft:             raft,
-		electionDeadline: uint16(electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1)),
+		electionDeadline: electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1),
 		electionTicks:    0,
 		mu:               &sync.Mutex{},
 	}
@@ -80,10 +80,6 @@ func (f *FollowerRole) HandleAppendEntries(
 		return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 	}
 
-	f.raft.store.SetLeaderId(leaderId)
-
-	f.resetElectionTimer()
-
 	lastLogEntryIndex, _ := f.raft.log.GetLastIndex()
 
 	if prevLogEntryIndex > lastLogEntryIndex {
@@ -116,9 +112,15 @@ func (f *FollowerRole) HandleAppendEntries(
 		}
 	}
 
+	f.resetElectionTimer()
+
+	f.raft.store.SetLeaderId(leaderId)
+
 	f.appendEntries(prevLogEntryIndex, logEntries)
 
 	f.raft.setCommitIndex(leaderCommit)
+
+	f.applyToFiniteStateMachine()
 
 	return currentTerm, true, 0, 0
 }
@@ -164,9 +166,9 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 		return currentTerm, false
 	}
 
-	f.raft.store.SetVotedFor(candidateId)
-
 	f.resetElectionTimer()
+
+	f.raft.store.SetVotedFor(candidateId)
 
 	return currentTerm, true
 }
@@ -197,7 +199,7 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 						}
 					}
 
-					f.raft.log.Commit() // TODO
+					f.raft.log.Commit()
 				}
 
 				return
@@ -214,12 +216,42 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 			}
 		}
 
-		f.raft.log.Commit() // TODO
+		f.raft.log.Commit()
 
 		return
 	}
 }
 
+func (f *FollowerRole) applyToFiniteStateMachine() {
+	// l.raft.applyMu.Lock()
+	// defer l.raft.applyMu.Unlock()
+
+	commitIndex := f.raft.store.commitIndex.Load()
+	lastApplied := f.raft.store.lastApplied
+
+	if commitIndex <= lastApplied {
+		return
+	}
+
+	for idx := lastApplied + 1; idx <= commitIndex; idx++ {
+		entry, err := f.raft.log.ReadAndDeserialize(idx)
+
+		if err != nil {
+			break
+		}
+
+		if len(entry.Data) > 0 {
+			f.raft.fsm.Apply(entry.Data)
+		}
+
+		f.raft.store.lastApplied = idx
+	}
+}
+
 func (f *FollowerRole) resetElectionTimer() {
+	electionTimeoutMin := 15 * 5
+	electionTimeoutMax := 15 * 6
+
+	f.electionDeadline = electionTimeoutMin + f.raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1)
 	f.electionTicks = 0
 }

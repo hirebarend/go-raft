@@ -1,6 +1,9 @@
 package internal
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 type Store struct {
 	mu sync.RWMutex
@@ -12,7 +15,7 @@ type Store struct {
 	votedFor string
 
 	// volatile
-	commitIndex uint64
+	commitIndex atomic.Uint64
 
 	// volatile
 	lastApplied uint64
@@ -24,7 +27,7 @@ func NewStore() *Store {
 	return &Store{
 		currentTerm: 0,
 		votedFor:    "",
-		commitIndex: 0,
+		// commitIndex: 0,
 		lastApplied: 0,
 	}
 }

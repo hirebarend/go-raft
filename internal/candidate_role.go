@@ -8,8 +8,9 @@ import (
 
 type CandidateRole struct {
 	raft             *Raft
-	electionDeadline uint16
-	electionTicks    uint16
+	electionDeadline int
+	electionTicks    int
+	votes            atomic.Int32
 }
 
 func NewCandidateRole(raft *Raft) *CandidateRole {
@@ -18,8 +19,9 @@ func NewCandidateRole(raft *Raft) *CandidateRole {
 
 	return &CandidateRole{
 		raft:             raft,
-		electionDeadline: uint16(electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1)),
+		electionDeadline: electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1),
 		electionTicks:    0,
+		// votes:            0,
 	}
 }
 
@@ -34,9 +36,9 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 
 	nodes := append([]string(nil), c.raft.nodes...)
 
-	numberOfVotes := uint32(1)
+	majority := len(c.raft.nodes)/2 + 1
 
-	if numberOfVotes > uint32(len(nodes)/2) {
+	if int(c.votes.Add(1)) >= majority {
 		leaderRole := c.raft.becomeLeader()
 
 		leaderRole.OnEnter(currentTerm)
@@ -51,37 +53,7 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 			continue
 		}
 
-		go func(n string, t uint64, cid string, llei uint64, llet uint64, numberOfNodes int) {
-			term, voteGranted := c.raft.transport.RequestVote(n, t, cid, llei, llet)
-
-			currentTerm := c.raft.store.GetCurrentTerm()
-
-			if term > currentTerm {
-				followerRole := c.raft.becomeFollower()
-
-				followerRole.OnEnter(term)
-
-				return
-			}
-
-			if !voteGranted || term != t {
-				return
-			}
-
-			if c.raft.role.GetType() != "candidate" || currentTerm != t {
-				return
-			}
-
-			atomic.AddUint32(&numberOfVotes, 1)
-
-			if numberOfVotes > uint32(numberOfNodes/2) {
-				leaderRole := c.raft.becomeLeader()
-
-				leaderRole.OnEnter(term)
-
-				return
-			}
-		}(node, currentTerm, id, lastLogEntryIndex, lastLogEntryTerm, len(nodes))
+		go c.sendRequestVote(node, currentTerm, id, lastLogEntryIndex, lastLogEntryTerm)
 	}
 }
 
@@ -154,4 +126,36 @@ func (c *CandidateRole) HandleRequestVote(term uint64, candidateId string, lastL
 
 func (c *CandidateRole) HandlePropose(ctx context.Context, data []byte) (any, error) {
 	return nil, fmt.Errorf("not leader")
+}
+
+func (c *CandidateRole) sendRequestVote(node string, term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) {
+	t, voteGranted := c.raft.transport.RequestVote(node, term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
+
+	currentTerm := c.raft.store.GetCurrentTerm()
+
+	if t > currentTerm {
+		followerRole := c.raft.becomeFollower()
+
+		followerRole.OnEnter(t)
+
+		return
+	}
+
+	if !voteGranted || t != term {
+		return
+	}
+
+	if c.raft.role.GetType() != "candidate" || currentTerm != term {
+		return
+	}
+
+	majority := len(c.raft.nodes)/2 + 1
+
+	if int(c.votes.Add(1)) >= majority {
+		leaderRole := c.raft.becomeLeader()
+
+		leaderRole.OnEnter(term)
+
+		return
+	}
 }

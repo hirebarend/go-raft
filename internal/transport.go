@@ -81,19 +81,19 @@ func (t *Transport) AppendEntries(
 	node string,
 	term uint64,
 	leaderId string,
-	prevLogIndex uint64,
-	prevLogTerm uint64,
-	entries []LogEntry,
-	leaderCommit uint64,
+	prevLogEntryIndex uint64,
+	prevLogEntryTerm uint64,
+	logEntries []LogEntry,
+	leaderCommitIndex uint64,
 ) (uint64, bool, uint64, uint64) {
-	fmt.Printf("sending %v\n", len(entries))
+	fmt.Printf("sending %v\n", len(logEntries))
 	appendEntriesRequest := AppendEntriesRequest{
 		Term:         term,
 		LeaderId:     leaderId,
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  prevLogTerm,
-		Entries:      entries,
-		LeaderCommit: leaderCommit,
+		PrevLogIndex: prevLogEntryIndex,
+		PrevLogTerm:  prevLogEntryTerm,
+		Entries:      logEntries,
+		LeaderCommit: leaderCommitIndex,
 	}
 
 	data, err := json.Marshal(appendEntriesRequest)
@@ -155,14 +155,14 @@ func (t *Transport) PreVote(
 	node string,
 	term uint64,
 	candidateId string,
-	lastLogIndex uint64,
-	lastLogTerm uint64,
+	lastLogEntryIndex uint64,
+	lastLogEntryTerm uint64,
 ) (uint64, bool) {
 	preVoteRequest := PreVoteRequest{
 		Term:         term,
 		CandidateID:  candidateId,
-		LastLogIndex: lastLogIndex,
-		LastLogTerm:  lastLogTerm,
+		LastLogIndex: lastLogEntryIndex,
+		LastLogTerm:  lastLogEntryTerm,
 	}
 
 	data, err := json.Marshal(preVoteRequest)
@@ -224,14 +224,14 @@ func (t *Transport) RequestVote(
 	node string,
 	term uint64,
 	candidateId string,
-	lastLogIndex uint64,
-	lastLogTerm uint64,
+	lastLogEntryIndex uint64,
+	lastLogEntryTerm uint64,
 ) (uint64, bool) {
 	requestVoteRequest := RequestVoteRequest{
 		Term:         term,
 		CandidateID:  candidateId,
-		LastLogIndex: lastLogIndex,
-		LastLogTerm:  lastLogTerm,
+		LastLogIndex: lastLogEntryIndex,
+		LastLogTerm:  lastLogEntryTerm,
 	}
 
 	data, err := json.Marshal(requestVoteRequest)

@@ -3,15 +3,16 @@ package internal
 import (
 	"context"
 	"sort"
+	"sync"
 )
 
 type LeaderRole struct {
 	raft              *Raft
-	heartbeatDeadline uint16
-	heartbeatTicks    uint16
-	nextIndex         map[string]uint64
-	matchIndex        map[string]uint64
-	sending           map[string]bool
+	heartbeatDeadline int
+	heartbeatTicks    int
+	matchIndex        sync.Map
+	nextIndex         sync.Map
+	pending           map[uint64][]chan any
 }
 
 func NewLeaderRole(raft *Raft) *LeaderRole {
@@ -19,9 +20,7 @@ func NewLeaderRole(raft *Raft) *LeaderRole {
 		raft:              raft,
 		heartbeatDeadline: 15,
 		heartbeatTicks:    0,
-		matchIndex:        make(map[string]uint64, len(raft.nodes)),
-		nextIndex:         make(map[string]uint64, len(raft.nodes)),
-		sending:           make(map[string]bool, len(raft.nodes)),
+		pending:           make(map[uint64][]chan any),
 	}
 }
 
@@ -34,8 +33,6 @@ func (l *LeaderRole) OnEnter(term uint64) {
 
 	if currentTerm != term {
 		followerRole := l.raft.becomeFollower()
-
-		l.raft.mu.Unlock()
 
 		followerRole.OnEnter(term)
 
@@ -51,16 +48,12 @@ func (l *LeaderRole) OnEnter(term uint64) {
 			continue
 		}
 
-		l.nextIndex[p] = lastLogEntryIndex + 1
-		l.matchIndex[p] = 0
+		l.matchIndex.Store(p, uint64(0))
+		l.nextIndex.Store(p, lastLogEntryIndex+1)
 	}
 
-	l.raft.mu.Lock()
-
-	l.matchIndex[l.raft.id] = lastLogEntryIndex
-	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
-
-	l.raft.mu.Unlock()
+	l.matchIndex.Store(l.raft.id, lastLogEntryIndex+1)
+	l.nextIndex.Store(l.raft.id, lastLogEntryIndex+1)
 
 	logEntry := LogEntry{
 		Data: nil,
@@ -77,7 +70,7 @@ func (l *LeaderRole) OnEnter(term uint64) {
 		return
 	}
 
-	// l.raft.log.Commit() // TODO
+	l.raft.log.Commit()
 
 	lastLogEntryIndex, err = l.raft.log.GetLastIndex()
 
@@ -89,18 +82,12 @@ func (l *LeaderRole) OnEnter(term uint64) {
 		return
 	}
 
-	l.raft.mu.Lock()
+	l.matchIndex.Store(l.raft.id, lastLogEntryIndex)
+	l.nextIndex.Store(l.raft.id, lastLogEntryIndex+1)
 
-	l.matchIndex[l.raft.id] = lastLogEntryIndex
-	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
+	l.sendAppendEntriesToAllNodes()
 
-	l.sendAppendEntriesToAllNodesLocked()
-
-	l.resetHeartbeatTimer()
-
-	l.maybeAdvanceCommit()
-
-	l.raft.mu.Unlock()
+	l.tryToAdvanceCommitIndex()
 }
 
 func (l *LeaderRole) OnExit() {
@@ -110,15 +97,8 @@ func (l *LeaderRole) Tick() {
 	l.heartbeatTicks++
 
 	if l.heartbeatTicks >= l.heartbeatDeadline {
-		l.raft.mu.Lock()
-
-		l.sendAppendEntriesToAllNodesLocked()
-
-		l.resetHeartbeatTimer()
-
-		l.raft.mu.Unlock()
+		l.sendAppendEntriesToAllNodes()
 	}
-
 }
 
 func (l *LeaderRole) HandleAppendEntries(
@@ -129,25 +109,17 @@ func (l *LeaderRole) HandleAppendEntries(
 	logEntries []LogEntry,
 	leaderCommit uint64,
 ) (uint64, bool, uint64, uint64) {
-	l.raft.mu.Lock()
-
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
-		l.raft.mu.Unlock()
-
 		return currentTerm, false, 0, 0
 	}
 
 	if term == currentTerm && leaderId == l.raft.id {
-		l.raft.mu.Unlock()
-
 		return currentTerm, false, 0, 0
 	}
 
 	followerRole := l.raft.becomeFollower()
-
-	l.raft.mu.Unlock()
 
 	followerRole.OnEnter(term)
 
@@ -188,25 +160,29 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 		return nil, err
 	}
 
-	// l.raft.log.Commit() // TODO
-
-	l.raft.mu.Lock()
-
 	ch := make(chan any, 1)
 
-	l.raft.pending[index] = append(l.raft.pending[index], ch)
+	l.pending[index] = append(l.pending[index], ch)
 
 	// l.sendAppendEntriesToAllNodesLocked()
 
-	l.raft.mu.Unlock()
+	value, _ := l.matchIndex.Load(l.raft.id)
+
+	if value.(uint64) < index {
+		l.matchIndex.Store(l.raft.id, index)
+	}
+
+	value, _ = l.nextIndex.Load(l.raft.id)
+
+	if value.(uint64) < index+1 {
+		l.nextIndex.Store(l.raft.id, index+1)
+	}
 
 	select {
 	case res := <-ch:
 		return res, nil
 	case <-ctx.Done():
-		l.raft.mu.Lock()
-
-		ws := l.raft.pending[index]
+		ws := l.pending[index]
 		if len(ws) > 0 {
 			for i := range ws {
 				if ws[i] == ch {
@@ -216,25 +192,68 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 				}
 			}
 			if len(ws) > 0 {
-				l.raft.pending[index] = ws
+				l.pending[index] = ws
 			} else {
-				delete(l.raft.pending, index)
+				delete(l.pending, index)
 			}
 		}
-
-		l.raft.mu.Unlock()
 
 		return nil, ctx.Err()
 	}
 }
 
-func (l *LeaderRole) maybeAdvanceCommit() {
+func (l *LeaderRole) applyToFiniteStateMachine() {
+	// l.raft.applyMu.Lock()
+	// defer l.raft.applyMu.Unlock()
+
+	commitIndex := l.raft.store.commitIndex.Load()
+	lastApplied := l.raft.store.lastApplied
+
+	if commitIndex <= lastApplied {
+		return
+	}
+
+	for idx := lastApplied + 1; idx <= commitIndex; idx++ {
+		entry, err := l.raft.log.ReadAndDeserialize(idx)
+
+		if err != nil {
+			break
+		}
+
+		var result any
+
+		if len(entry.Data) > 0 {
+			result = l.raft.fsm.Apply(entry.Data)
+		}
+
+		waiters := l.pending[idx]
+
+		if len(waiters) > 0 {
+			delete(l.pending, idx)
+		}
+
+		for _, ch := range waiters {
+			if result == nil && len(entry.Data) > 0 {
+				result = struct{}{}
+			}
+			ch <- result
+
+			close(ch)
+		}
+
+		l.raft.store.lastApplied = idx
+	}
+}
+
+func (l *LeaderRole) tryToAdvanceCommitIndex() {
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	matches := make([]uint64, 0, len(l.raft.nodes))
 
 	for _, n := range l.raft.nodes {
-		matches = append(matches, l.matchIndex[n])
+		value, _ := l.matchIndex.Load(n)
+
+		matches = append(matches, value.(uint64))
 	}
 
 	if len(matches) == 0 {
@@ -265,10 +284,10 @@ func (l *LeaderRole) maybeAdvanceCommit() {
 		return
 	}
 
-	if candidate > l.raft.store.commitIndex {
-		l.raft.store.commitIndex = candidate
+	if candidate > l.raft.store.commitIndex.Load() {
+		l.raft.setCommitIndex(candidate)
 
-		l.raft.cond.Signal()
+		l.applyToFiniteStateMachine()
 	}
 }
 
@@ -276,7 +295,9 @@ func (l *LeaderRole) resetHeartbeatTimer() {
 	l.heartbeatTicks = 0
 }
 
-func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
+func (l *LeaderRole) sendAppendEntriesToAllNodes() {
+	l.resetHeartbeatTimer()
+
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	lastLogEntryIndex, _ := l.raft.log.GetLastIndex()
@@ -286,13 +307,7 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 			continue
 		}
 
-		if l.sending[node] {
-			continue
-		}
-
-		l.sending[node] = true
-
-		next := l.nextIndex[node]
+		next, _ := l.nextIndex.Load(node)
 
 		if next == 0 {
 			next = lastLogEntryIndex + 1
@@ -300,8 +315,8 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 
 		var prevLogEntryIndex uint64
 
-		if next > 0 {
-			prevLogEntryIndex = next - 1
+		if next.(uint64) > 0 {
+			prevLogEntryIndex = next.(uint64) - 1
 		}
 
 		var prevLogEntryTerm uint64
@@ -314,96 +329,92 @@ func (l *LeaderRole) sendAppendEntriesToAllNodesLocked() {
 			}
 		}
 
-		var entries []LogEntry
+		var logEntries []LogEntry
 
-		if next <= lastLogEntryIndex {
+		if next.(uint64) <= lastLogEntryIndex {
 			const maxBatch = 2 * 1024
 			to := lastLogEntryIndex
-			count := to - next + 1
+			count := to - next.(uint64) + 1
 
 			if count > maxBatch {
-				to = next + maxBatch - 1
+				to = next.(uint64) + maxBatch - 1
 			}
 
-			entries = make([]LogEntry, 0, to-next+1)
+			logEntries = make([]LogEntry, 0, to-next.(uint64)+1)
 
-			for i := next; i <= to; i++ {
+			for i := next.(uint64); i <= to; i++ {
 				logEntry, err := l.raft.log.ReadAndDeserialize(i)
 
 				if err == nil {
-					entries = append(entries, *logEntry)
+					logEntries = append(logEntries, *logEntry)
 				} else {
 					break
 				}
 			}
 		}
 
-		go func(n string, t uint64, li string, plei uint64, plet uint64, le []LogEntry, lc uint64) {
-			term, success, conflictIndex, conflictTerm := l.raft.transport.AppendEntries(n, t, li, plei, plet, le, lc)
+		go l.sendAppendEntriesToNode(node, currentTerm, l.raft.GetLeaderId(), prevLogEntryIndex, prevLogEntryTerm, logEntries, l.raft.store.commitIndex.Load())
+	}
+}
 
-			l.raft.mu.Lock()
+func (l *LeaderRole) sendAppendEntriesToNode(node string, term uint64, leaderId string, prevLogEntryIndex uint64, prevLogEntryTerm uint64, logEntries []LogEntry, leaderCommitIndex uint64) {
+	t, success, conflictIndex, conflictTerm := l.raft.transport.AppendEntries(node, term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
 
-			defer func() {
-				l.sending[n] = false
-			}()
+	if t > l.raft.store.GetCurrentTerm() {
+		followerRole := l.raft.becomeFollower()
 
-			if term > l.raft.store.GetCurrentTerm() {
-				followerRole := l.raft.becomeFollower()
+		followerRole.OnEnter(t)
 
-				l.raft.mu.Unlock()
+		return
+	}
 
-				followerRole.OnEnter(term)
+	if l.raft.role.GetType() != "leader" || t != term {
+		return
+	}
 
-				return
-			}
+	if success {
+		lastSent := prevLogEntryIndex
 
-			if l.raft.role.GetType() != "leader" || term != t {
-				l.raft.mu.Unlock()
+		if len(logEntries) > 0 {
+			lastSent = prevLogEntryIndex + uint64(len(logEntries))
+		}
 
-				return
-			}
+		value, _ := l.matchIndex.Load(node)
 
-			if success {
-				lastSent := plei
+		if value.(uint64) < lastSent {
+			l.matchIndex.Store(node, lastSent)
+		}
 
-				if len(le) > 0 {
-					lastSent = plei + uint64(len(le))
+		next := lastSent + 1
+
+		value, _ = l.nextIndex.Load(node)
+
+		if value.(uint64) < next {
+			l.nextIndex.Store(node, next)
+		}
+
+		l.tryToAdvanceCommitIndex()
+	} else {
+		value, _ := l.nextIndex.Load(node)
+
+		if value.(uint64) > 1 {
+			if conflictTerm != 0 {
+				lastOfTerm := GetLastLogEntryIndexOfTerm(l.raft.log, conflictTerm)
+
+				if lastOfTerm > 0 {
+					l.nextIndex.Store(node, lastOfTerm+1)
+				} else {
+					l.nextIndex.Store(node, conflictIndex)
 				}
-
-				if l.matchIndex[n] < lastSent {
-					l.matchIndex[n] = lastSent
-				}
-
-				next := lastSent + 1
-
-				if l.nextIndex[n] < next {
-					l.nextIndex[n] = next
-				}
-
-				l.maybeAdvanceCommit()
-
-				l.raft.mu.Unlock()
 			} else {
-				if l.nextIndex[n] > 1 {
-					if conflictTerm != 0 {
-						lastOfTerm := GetLastLogEntryIndexOfTerm(l.raft.log, conflictTerm)
-
-						if lastOfTerm > 0 {
-							l.nextIndex[n] = lastOfTerm + 1
-						} else {
-							l.nextIndex[n] = conflictIndex
-						}
-					} else {
-						l.nextIndex[n] = conflictIndex
-					}
-
-					if l.nextIndex[n] < 1 {
-						l.nextIndex[n] = 1
-					}
-				}
-
-				l.raft.mu.Unlock()
+				l.nextIndex.Store(node, conflictIndex)
 			}
-		}(node, currentTerm, l.raft.GetLeaderId(), prevLogEntryIndex, prevLogEntryTerm, entries, l.raft.store.commitIndex)
+
+			value, _ = l.nextIndex.Load(node)
+
+			if value.(uint64) < 1 {
+				l.nextIndex.Store(node, uint64(1))
+			}
+		}
 	}
 }
