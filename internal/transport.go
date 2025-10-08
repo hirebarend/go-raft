@@ -86,7 +86,6 @@ func (t *Transport) AppendEntries(
 	logEntries []LogEntry,
 	leaderCommitIndex uint64,
 ) (uint64, bool, uint64, uint64) {
-	fmt.Printf("sending %v\n", len(logEntries))
 	appendEntriesRequest := AppendEntriesRequest{
 		Term:         term,
 		LeaderId:     leaderId,

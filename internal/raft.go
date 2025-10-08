@@ -33,43 +33,33 @@ type RaftRole interface {
 }
 
 type Raft struct {
-	applierMu   *sync.Mutex
-	applierCond *sync.Cond
-	fsm         *FSM
-	id          string
-	log         *golog.Log[LogEntry]
-	mu          *sync.Mutex
-	nodes       []string
-	rng         *rand.Rand
-	role        RaftRole
-	roleMu      *sync.Mutex
-	store       *Store
-	transport   *Transport
+	fsm       *FSM
+	id        string
+	log       *golog.Log[LogEntry]
+	mu        *sync.Mutex
+	nodes     []string
+	rng       *rand.Rand
+	role      RaftRole
+	store     *Store
+	transport *Transport
 }
 
 func NewRaft(id string, nodes []string, log *golog.Log[LogEntry], store *Store, transport *Transport, fsm *FSM) *Raft {
 	seed := uint64(time.Now().UnixNano())
 
-	applierMu := &sync.Mutex{}
-
 	raft := Raft{
-		applierCond: sync.NewCond(applierMu),
-		applierMu:   applierMu,
-		fsm:         fsm,
-		id:          id,
-		log:         log,
-		mu:          &sync.Mutex{},
-		nodes:       nodes,
-		rng:         rand.New(rand.NewPCG(seed, seed>>1)),
-		role:        nil,
-		roleMu:      &sync.Mutex{},
-		store:       store,
-		transport:   transport,
+		fsm:       fsm,
+		id:        id,
+		log:       log,
+		mu:        &sync.Mutex{},
+		nodes:     nodes,
+		rng:       rand.New(rand.NewPCG(seed, seed>>1)),
+		role:      nil,
+		store:     store,
+		transport: transport,
 	}
 
-	raft.becomeFollower()
-
-	raft.role.OnEnter(0)
+	raft.becomeFollower(0)
 
 	return &raft
 }
@@ -171,38 +161,32 @@ func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
 // 	}
 // }
 
-func (r *Raft) becomeCandidate() *CandidateRole {
+func (r *Raft) becomeCandidate(term uint64) *CandidateRole {
 	role := NewCandidateRole(r)
 
-	r.roleMu.Lock()
-
 	r.role = role
 
-	r.roleMu.Unlock()
+	r.role.OnEnter(term)
 
 	return role
 }
 
-func (r *Raft) becomeFollower() *FollowerRole {
+func (r *Raft) becomeFollower(term uint64) *FollowerRole {
 	role := NewFollowerRole(r)
 
-	r.roleMu.Lock()
-
 	r.role = role
 
-	r.roleMu.Unlock()
+	r.role.OnEnter(term)
 
 	return role
 }
 
-func (r *Raft) becomeLeader() *LeaderRole {
+func (r *Raft) becomeLeader(term uint64) *LeaderRole {
 	role := NewLeaderRole(r)
-
-	r.roleMu.Lock()
 
 	r.role = role
 
-	r.roleMu.Unlock()
+	r.role.OnEnter(term)
 
 	return role
 }

@@ -137,7 +137,7 @@ func main() {
 	// go raft.StartApplier()
 
 	go func() {
-		ticker := time.NewTicker(300 * time.Millisecond) // TODO
+		ticker := time.NewTicker(75 * time.Millisecond) // TODO
 		defer ticker.Stop()
 
 		for {

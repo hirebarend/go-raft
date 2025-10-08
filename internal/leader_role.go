@@ -32,9 +32,7 @@ func (l *LeaderRole) OnEnter(term uint64) {
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	if currentTerm != term {
-		followerRole := l.raft.becomeFollower()
-
-		followerRole.OnEnter(term)
+		l.raft.becomeFollower(term)
 
 		return
 	}
@@ -63,9 +61,7 @@ func (l *LeaderRole) OnEnter(term uint64) {
 	_, err := l.raft.log.SerializeAndWrite(&logEntry)
 
 	if err != nil {
-		followerRole := l.raft.becomeFollower()
-
-		followerRole.OnEnter(term)
+		l.raft.becomeFollower(term)
 
 		return
 	}
@@ -75,9 +71,7 @@ func (l *LeaderRole) OnEnter(term uint64) {
 	lastLogEntryIndex, err = l.raft.log.GetLastIndex()
 
 	if err != nil {
-		followerRole := l.raft.becomeFollower()
-
-		followerRole.OnEnter(term)
+		l.raft.becomeFollower(term)
 
 		return
 	}
@@ -94,6 +88,9 @@ func (l *LeaderRole) OnExit() {
 }
 
 func (l *LeaderRole) Tick() {
+	l.raft.mu.Lock()
+	defer l.raft.mu.Unlock()
+
 	l.heartbeatTicks++
 
 	if l.heartbeatTicks >= l.heartbeatDeadline {
@@ -109,19 +106,25 @@ func (l *LeaderRole) HandleAppendEntries(
 	logEntries []LogEntry,
 	leaderCommit uint64,
 ) (uint64, bool, uint64, uint64) {
+	l.raft.mu.Lock()
+
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
+		l.raft.mu.Unlock()
+
 		return currentTerm, false, 0, 0
 	}
 
 	if term == currentTerm && leaderId == l.raft.id {
+		l.raft.mu.Unlock()
+
 		return currentTerm, false, 0, 0
 	}
 
-	followerRole := l.raft.becomeFollower()
+	followerRole := l.raft.becomeFollower(term)
 
-	followerRole.OnEnter(term)
+	l.raft.mu.Unlock()
 
 	return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 }
@@ -133,15 +136,19 @@ func (l *LeaderRole) HandlePreVote(term uint64, candidateId string, lastLogEntry
 }
 
 func (l *LeaderRole) HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool) {
+	l.raft.mu.Lock()
+
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	if term <= currentTerm {
+		l.raft.mu.Unlock()
+
 		return currentTerm, false
 	}
 
-	followerRole := l.raft.becomeFollower()
+	followerRole := l.raft.becomeFollower(term)
 
-	followerRole.OnEnter(term)
+	l.raft.mu.Unlock()
 
 	return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 }
@@ -203,9 +210,6 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 }
 
 func (l *LeaderRole) applyToFiniteStateMachine() {
-	// l.raft.applyMu.Lock()
-	// defer l.raft.applyMu.Unlock()
-
 	commitIndex := l.raft.store.commitIndex.Load()
 	lastApplied := l.raft.store.lastApplied
 
@@ -361,9 +365,7 @@ func (l *LeaderRole) sendAppendEntriesToNode(node string, term uint64, leaderId 
 	t, success, conflictIndex, conflictTerm := l.raft.transport.AppendEntries(node, term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
 
 	if t > l.raft.store.GetCurrentTerm() {
-		followerRole := l.raft.becomeFollower()
-
-		followerRole.OnEnter(t)
+		l.raft.becomeFollower(t)
 
 		return
 	}

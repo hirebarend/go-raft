@@ -3,14 +3,12 @@ package internal
 import (
 	"context"
 	"fmt"
-	"sync"
 )
 
 type FollowerRole struct {
 	raft             *Raft
 	electionDeadline int
 	electionTicks    int
-	mu               *sync.Mutex
 }
 
 func NewFollowerRole(raft *Raft) *FollowerRole {
@@ -21,7 +19,6 @@ func NewFollowerRole(raft *Raft) *FollowerRole {
 		raft:             raft,
 		electionDeadline: electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1),
 		electionTicks:    0,
-		mu:               &sync.Mutex{},
 	}
 }
 
@@ -45,14 +42,15 @@ func (f *FollowerRole) OnExit() {
 }
 
 func (f *FollowerRole) Tick() {
+	f.raft.mu.Lock()
+	defer f.raft.mu.Unlock()
+
 	f.electionTicks++
 
 	if f.electionTicks >= f.electionDeadline {
 		currentTerm := f.raft.store.GetCurrentTerm()
 
-		candidateRole := f.raft.becomeCandidate()
-
-		candidateRole.OnEnter(currentTerm)
+		f.raft.becomeCandidate(currentTerm)
 
 		return
 	}
@@ -66,16 +64,20 @@ func (f *FollowerRole) HandleAppendEntries(
 	logEntries []LogEntry,
 	leaderCommit uint64,
 ) (uint64, bool, uint64, uint64) {
+	f.raft.mu.Lock()
+
 	currentTerm := f.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
+		f.raft.mu.Unlock()
+
 		return currentTerm, false, 0, 0
 	}
 
 	if term > currentTerm {
-		followerRole := f.raft.becomeFollower()
+		followerRole := f.raft.becomeFollower(term)
 
-		followerRole.OnEnter(term)
+		f.raft.mu.Unlock()
 
 		return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 	}
@@ -83,6 +85,8 @@ func (f *FollowerRole) HandleAppendEntries(
 	lastLogEntryIndex, _ := f.raft.log.GetLastIndex()
 
 	if prevLogEntryIndex > lastLogEntryIndex {
+		f.raft.mu.Unlock()
+
 		return currentTerm, false, lastLogEntryIndex + 1, 0
 	}
 
@@ -120,12 +124,17 @@ func (f *FollowerRole) HandleAppendEntries(
 
 	f.raft.setCommitIndex(leaderCommit)
 
+	f.raft.mu.Unlock()
+
 	f.applyToFiniteStateMachine()
 
 	return currentTerm, true, 0, 0
 }
 
 func (f *FollowerRole) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {
+	f.raft.mu.Lock()
+	defer f.raft.mu.Unlock()
+
 	currentTerm := f.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
@@ -142,21 +151,27 @@ func (f *FollowerRole) HandlePreVote(term uint64, candidateId string, lastLogEnt
 }
 
 func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool) {
+	f.raft.mu.Lock()
+
 	currentTerm := f.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
+		f.raft.mu.Unlock()
+
 		return currentTerm, false
 	}
 
 	if term > currentTerm {
-		followerRole := f.raft.becomeFollower()
+		followerRole := f.raft.becomeFollower(term)
 
-		followerRole.OnEnter(term)
+		f.raft.mu.Unlock()
 
 		return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 	}
 
 	if f.raft.store.GetVotedFor() != "" && f.raft.store.GetVotedFor() != candidateId {
+		f.raft.mu.Unlock()
+
 		return currentTerm, false
 	}
 
@@ -170,6 +185,8 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 
 	f.raft.store.SetVotedFor(candidateId)
 
+	f.raft.mu.Unlock()
+
 	return currentTerm, true
 }
 
@@ -178,9 +195,6 @@ func (f *FollowerRole) HandlePropose(ctx context.Context, data []byte) (any, err
 }
 
 func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogEntry) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
 	for i, entry := range logEntries {
 		idx := prevLogEntryIndex + 1 + uint64(i)
 
@@ -223,9 +237,6 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 }
 
 func (f *FollowerRole) applyToFiniteStateMachine() {
-	// l.raft.applyMu.Lock()
-	// defer l.raft.applyMu.Unlock()
-
 	commitIndex := f.raft.store.commitIndex.Load()
 	lastApplied := f.raft.store.lastApplied
 
