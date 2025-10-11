@@ -1,7 +1,6 @@
 package internal
 
 type LogEntry struct {
-	Data  []byte
-	Index uint64
-	Term  uint64
+	Data []byte
+	Term uint64
 }

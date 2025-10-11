@@ -1,15 +1,11 @@
 config:
-  target: "http://localhost:8084"
+  target: "http://localhost:8082"
   http:
-    timeout: 120
+    timeout: 10
   phases:
-    - duration: 30
-      arrivalRate: 10
-      rampTo: 30
-
-    - name: sustain
-      duration: 60
-      arrivalRate: 30
+    - duration: 350
+      arrivalRate: 5
+      rampTo: 120
 
   defaults:
     headers:

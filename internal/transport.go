@@ -27,8 +27,10 @@ type AppendEntriesRequest struct {
 }
 
 type AppendEntriesResponse struct {
-	Term    uint64 `json:"term"`
-	Success bool   `json:"success"`
+	Term          uint64 `json:"term"`
+	Success       bool   `json:"success"`
+	ConflictIndex uint64 `json:"conflict_index"`
+	ConflictTerm  uint64 `json:"conflict_term"`
 }
 
 type PreVoteRequest struct {
@@ -79,24 +81,24 @@ func (t *Transport) AppendEntries(
 	node string,
 	term uint64,
 	leaderId string,
-	prevLogIndex uint64,
-	prevLogTerm uint64,
-	entries []LogEntry,
-	leaderCommit uint64,
-) (uint64, bool) {
+	prevLogEntryIndex uint64,
+	prevLogEntryTerm uint64,
+	logEntries []LogEntry,
+	leaderCommitIndex uint64,
+) (uint64, bool, uint64, uint64) {
 	appendEntriesRequest := AppendEntriesRequest{
 		Term:         term,
 		LeaderId:     leaderId,
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  prevLogTerm,
-		Entries:      entries,
-		LeaderCommit: leaderCommit,
+		PrevLogIndex: prevLogEntryIndex,
+		PrevLogTerm:  prevLogEntryTerm,
+		Entries:      logEntries,
+		LeaderCommit: leaderCommitIndex,
 	}
 
 	data, err := json.Marshal(appendEntriesRequest)
 
 	if err != nil {
-		return term, false
+		return term, false, 0, 0
 	}
 
 	t.ensureClient()
@@ -109,7 +111,7 @@ func (t *Transport) AppendEntries(
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 
 	if err != nil {
-		return term, false
+		return term, false, 0, 0
 	}
 
 	request.Header.Set("Content-Type", "application/json")
@@ -117,7 +119,7 @@ func (t *Transport) AppendEntries(
 	response, err := t.client.Do(request)
 
 	if err != nil {
-		return term, false
+		return term, false, 0, 0
 	}
 
 	defer func() {
@@ -126,7 +128,7 @@ func (t *Transport) AppendEntries(
 	}()
 
 	if response.StatusCode != http.StatusOK {
-		return term, false
+		return term, false, 0, 0
 	}
 
 	const maxBody = 1 << 20
@@ -138,28 +140,28 @@ func (t *Transport) AppendEntries(
 	decoder := json.NewDecoder(reader)
 
 	if err := decoder.Decode(&appendEntriesResponse); err != nil {
-		return term, false
+		return term, false, 0, 0
 	}
 
 	if decoder.More() {
-		return term, false
+		return term, false, 0, 0
 	}
 
-	return appendEntriesResponse.Term, appendEntriesResponse.Success
+	return appendEntriesResponse.Term, appendEntriesResponse.Success, appendEntriesResponse.ConflictIndex, appendEntriesResponse.ConflictTerm
 }
 
 func (t *Transport) PreVote(
 	node string,
 	term uint64,
 	candidateId string,
-	lastLogIndex uint64,
-	lastLogTerm uint64,
+	lastLogEntryIndex uint64,
+	lastLogEntryTerm uint64,
 ) (uint64, bool) {
 	preVoteRequest := PreVoteRequest{
 		Term:         term,
 		CandidateID:  candidateId,
-		LastLogIndex: lastLogIndex,
-		LastLogTerm:  lastLogTerm,
+		LastLogIndex: lastLogEntryIndex,
+		LastLogTerm:  lastLogEntryTerm,
 	}
 
 	data, err := json.Marshal(preVoteRequest)
@@ -221,14 +223,14 @@ func (t *Transport) RequestVote(
 	node string,
 	term uint64,
 	candidateId string,
-	lastLogIndex uint64,
-	lastLogTerm uint64,
+	lastLogEntryIndex uint64,
+	lastLogEntryTerm uint64,
 ) (uint64, bool) {
 	requestVoteRequest := RequestVoteRequest{
 		Term:         term,
 		CandidateID:  candidateId,
-		LastLogIndex: lastLogIndex,
-		LastLogTerm:  lastLogTerm,
+		LastLogIndex: lastLogEntryIndex,
+		LastLogTerm:  lastLogEntryTerm,
 	}
 
 	data, err := json.Marshal(requestVoteRequest)

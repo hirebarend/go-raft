@@ -1,48 +1,70 @@
 package internal
 
+import (
+	"sync"
+	"sync/atomic"
+)
+
 type Store struct {
+	mu sync.RWMutex
+
 	// persistent
 	currentTerm uint64
 
 	// persistent
 	votedFor string
 
-	// persistent
-	log *Log
-
 	// volatile
-	commitIndex uint64
+	commitIndex atomic.Uint64
 
 	// volatile
 	lastApplied uint64
 
-	// volatile (leader)
-	nextIndex map[string]uint64
-
-	// volatile (leader)
-	matchIndex map[string]uint64
+	leaderId string
 }
 
-func NewStore(log *Log) *Store {
+func NewStore() *Store {
 	return &Store{
 		currentTerm: 0,
 		votedFor:    "",
-		log:         log,
-		commitIndex: 0,
+		// commitIndex: 0,
 		lastApplied: 0,
-		nextIndex:   nil, // TODO:
-		matchIndex:  nil, // TODO:
 	}
 }
 
 func (s *Store) GetCurrentTerm() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.currentTerm
+}
+
+func (s *Store) IncrementCurrentTerm() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.currentTerm = s.currentTerm + 1
+
 	return s.currentTerm
 }
 
 func (s *Store) SetCurrentTerm(v uint64) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.currentTerm = v
 
 	return s.currentTerm
+}
+
+func (s *Store) GetLeaderId() string {
+	return s.leaderId
+}
+
+func (s *Store) SetLeaderId(leaderId string) string {
+	s.leaderId = leaderId
+
+	return s.leaderId
 }
 
 func (s *Store) GetVotedFor() string {
