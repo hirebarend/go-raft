@@ -18,9 +18,11 @@ import (
 )
 
 func main() {
-	if os.Getenv("ENV") == "PRODUCTION" {
-		gin.SetMode(gin.ReleaseMode)
-	}
+	// if os.Getenv("ENV") == "PRODUCTION" {
+	// 	gin.SetMode(gin.ReleaseMode)
+	// }
+
+	gin.SetMode(gin.ReleaseMode)
 
 	data := flag.String("data", "data", "Path to the directory used for Raft's write-ahead log and persistent state.")
 	nodes := flag.String("nodes", "127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083", "Comma-separated list of cluster peer addresses (host:port).")
@@ -40,10 +42,22 @@ func main() {
 	store := internal.NewStore()
 	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), log, store, &internal.Transport{}, internal.NewFSM())
 
-	r := gin.Default()
+	r := gin.New()
 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})
+	})
+
+	r.GET("/disable", func(c *gin.Context) {
+		raft.Disable()
+
+		c.JSON(200, gin.H{"message": "disabled"})
+	})
+
+	r.GET("/enable", func(c *gin.Context) {
+		raft.Enable()
+
+		c.JSON(200, gin.H{"message": "enabled"})
 	})
 
 	r.POST("/append-entries", func(c *gin.Context) {

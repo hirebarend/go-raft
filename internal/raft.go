@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"sync"
@@ -14,6 +15,8 @@ type RaftRole interface {
 	GetType() string
 
 	OnEnter(term uint64)
+
+	OnExit()
 
 	HandleAppendEntries(
 		term uint64,
@@ -34,6 +37,7 @@ type RaftRole interface {
 }
 
 type Raft struct {
+	enabled   bool
 	fsm       *FSM
 	id        string
 	log       *golog.Log[LogEntry]
@@ -49,6 +53,7 @@ func NewRaft(id string, nodes []string, log *golog.Log[LogEntry], store *Store, 
 	seed := uint64(time.Now().UnixNano())
 
 	raft := Raft{
+		enabled:   true,
 		fsm:       fsm,
 		id:        id,
 		log:       log,
@@ -65,7 +70,48 @@ func NewRaft(id string, nodes []string, log *golog.Log[LogEntry], store *Store, 
 	return &raft
 }
 
+func (r *Raft) Disable() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.enabled {
+		return
+	}
+
+	r.enabled = false
+
+	if leaderRole, ok := r.role.(*LeaderRole); ok {
+		leaderRole.OnExit()
+
+		r.role = nil
+	}
+
+	r.store.SetLeaderId("")
+}
+
+func (r *Raft) Enable() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.enabled {
+		return
+	}
+
+	currentTerm := r.store.GetCurrentTerm()
+
+	r.becomeFollower(currentTerm)
+
+	r.enabled = true
+}
+
 func (r *Raft) Tick() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.enabled {
+		return
+	}
+
 	r.role.Tick()
 }
 
@@ -81,23 +127,52 @@ func (r *Raft) HandleAppendEntries(
 	logEntries []LogEntry,
 	leaderCommit uint64,
 ) (uint64, bool, uint64, uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.enabled {
+		return r.store.GetCurrentTerm(), false, 0, 0
+	}
+
 	return r.role.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 }
 
 func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.enabled {
+		return r.store.GetCurrentTerm(), false
+	}
+
 	return r.role.HandlePreVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 }
 
 func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.enabled {
+		return r.store.GetCurrentTerm(), false
+	}
+
 	return r.role.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 }
 
 func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
+	if !r.enabled {
+		return nil, errors.New("disabled (hard off)")
+	}
+
 	return r.role.HandlePropose(ctx, data)
 }
 
 func (r *Raft) becomeCandidate() *CandidateRole {
 	fmt.Printf("[%v] candidate\n", r.id)
+
+	if r.role != nil {
+		r.role.OnExit()
+	}
 
 	role := NewCandidateRole(r)
 
@@ -111,6 +186,10 @@ func (r *Raft) becomeCandidate() *CandidateRole {
 func (r *Raft) becomeFollower(term uint64) *FollowerRole {
 	fmt.Printf("[%v][%v] follower\n", r.id, term)
 
+	if r.role != nil {
+		r.role.OnExit()
+	}
+
 	role := NewFollowerRole(r)
 
 	r.role = role
@@ -122,6 +201,10 @@ func (r *Raft) becomeFollower(term uint64) *FollowerRole {
 
 func (r *Raft) becomeLeader(term uint64) *LeaderRole {
 	fmt.Printf("[%v][%v] leader\n", r.id, term)
+
+	if r.role != nil {
+		r.role.OnExit()
+	}
 
 	role := NewLeaderRole(r)
 

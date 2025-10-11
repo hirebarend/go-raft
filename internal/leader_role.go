@@ -95,9 +95,6 @@ func (l *LeaderRole) OnExit() {
 }
 
 func (l *LeaderRole) Tick() {
-	l.raft.mu.Lock()
-	defer l.raft.mu.Unlock()
-
 	l.heartbeatTicks++
 
 	if l.heartbeatTicks >= l.heartbeatDeadline {
@@ -113,25 +110,17 @@ func (l *LeaderRole) HandleAppendEntries(
 	logEntries []LogEntry,
 	leaderCommit uint64,
 ) (uint64, bool, uint64, uint64) {
-	l.raft.mu.Lock()
-
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
-		l.raft.mu.Unlock()
-
 		return currentTerm, false, 0, 0
 	}
 
 	if term == currentTerm && leaderId == l.raft.id {
-		l.raft.mu.Unlock()
-
 		return currentTerm, false, 0, 0
 	}
 
 	followerRole := l.raft.becomeFollower(term)
-
-	l.raft.mu.Unlock()
 
 	return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 }
@@ -143,19 +132,13 @@ func (l *LeaderRole) HandlePreVote(term uint64, candidateId string, lastLogEntry
 }
 
 func (l *LeaderRole) HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool) {
-	l.raft.mu.Lock()
-
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	if term <= currentTerm {
-		l.raft.mu.Unlock()
-
 		return currentTerm, false
 	}
 
 	followerRole := l.raft.becomeFollower(term)
-
-	l.raft.mu.Unlock()
 
 	return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 }

@@ -42,9 +42,6 @@ func (f *FollowerRole) OnExit() {
 }
 
 func (f *FollowerRole) Tick() {
-	f.raft.mu.Lock()
-	defer f.raft.mu.Unlock()
-
 	f.electionTicks++
 
 	if f.electionTicks >= f.electionDeadline {
@@ -62,20 +59,14 @@ func (f *FollowerRole) HandleAppendEntries(
 	logEntries []LogEntry,
 	leaderCommit uint64,
 ) (uint64, bool, uint64, uint64) {
-	f.raft.mu.Lock()
-
 	currentTerm := f.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
-		f.raft.mu.Unlock()
-
 		return currentTerm, false, 0, 0
 	}
 
 	if term > currentTerm {
 		followerRole := f.raft.becomeFollower(term)
-
-		f.raft.mu.Unlock()
 
 		return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 	}
@@ -85,8 +76,6 @@ func (f *FollowerRole) HandleAppendEntries(
 	lastLogEntryIndex, _ := f.raft.log.GetLastIndex()
 
 	if prevLogEntryIndex > lastLogEntryIndex {
-		f.raft.mu.Unlock()
-
 		return currentTerm, false, lastLogEntryIndex + 1, 0
 	}
 
@@ -122,17 +111,12 @@ func (f *FollowerRole) HandleAppendEntries(
 
 	f.raft.setCommitIndex(leaderCommit)
 
-	f.raft.mu.Unlock()
-
 	f.applyToFiniteStateMachine() // TODO
 
 	return currentTerm, true, 0, 0
 }
 
 func (f *FollowerRole) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {
-	f.raft.mu.Lock()
-	defer f.raft.mu.Unlock()
-
 	currentTerm := f.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
@@ -149,43 +133,31 @@ func (f *FollowerRole) HandlePreVote(term uint64, candidateId string, lastLogEnt
 }
 
 func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool) {
-	f.raft.mu.Lock()
-
 	currentTerm := f.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
-		f.raft.mu.Unlock()
-
 		return currentTerm, false
 	}
 
 	if term > currentTerm {
 		followerRole := f.raft.becomeFollower(term)
 
-		f.raft.mu.Unlock()
-
 		return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 	}
 
 	if f.raft.store.GetVotedFor() != "" && f.raft.store.GetVotedFor() != candidateId {
-		f.raft.mu.Unlock()
-
 		return currentTerm, false
 	}
 
 	myLastLogEntryIndex, myLastLogEntryTerm := GetLastLogEntryIndexAndTerm(f.raft.log)
 
 	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {
-		f.raft.mu.Unlock()
-
 		return currentTerm, false
 	}
 
 	f.resetElectionTimer()
 
 	f.raft.store.SetVotedFor(candidateId)
-
-	f.raft.mu.Unlock()
 
 	return currentTerm, true
 }

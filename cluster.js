@@ -64,6 +64,7 @@ async function killNode(obj) {
 }
 
 const arr = [];
+let interval = null;
 
 (async () => {
   for (const node of NODES) {
@@ -71,6 +72,18 @@ const arr = [];
 
     arr.push(x);
   }
+
+  interval = setInterval(async () => {
+    const obj = arr[Math.floor(Math.random() * arr.length)];
+
+    console.log(`[${obj.node.port}] shutting down`);
+    await killNode(obj);
+
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+
+    console.log(`[${obj.node.port}] starting`);
+    await spawnNode(obj.node);
+  }, 30000);
 })();
 
 process.on("SIGINT", () => {
