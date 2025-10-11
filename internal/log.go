@@ -13,7 +13,7 @@ func GetLastLogEntryIndexAndTerm(log *golog.Log[LogEntry]) (uint64, uint64) {
 		return 0, 0
 	}
 
-	lastLogEntry, err := log.ReadAndDeserialize(lastLogEntryIndex)
+	lastLogEntry, err := log.ReadDeserialize(lastLogEntryIndex)
 
 	if err != nil {
 		return 0, 0
@@ -34,7 +34,7 @@ func GetLastLogEntryIndexOfTerm(log *golog.Log[LogEntry], term uint64) uint64 {
 	}
 
 	for i := lastLogEntryIndex; i > 0; i-- {
-		logEntry, err := log.ReadAndDeserialize(i)
+		logEntry, err := log.ReadDeserialize(i)
 
 		if err != nil || logEntry == nil {
 			return 0
@@ -56,7 +56,7 @@ func LogEntryMatchesTermAtIndex(log *golog.Log[LogEntry], index uint64, term uin
 		return true
 	}
 
-	prevLogEntry, err := log.ReadAndDeserialize(index)
+	prevLogEntry, err := log.ReadDeserialize(index)
 
 	if err != nil {
 		return false

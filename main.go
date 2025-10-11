@@ -22,16 +22,20 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	data := flag.String("data", "data", "")
-	nodes := flag.String("nodes", "127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083", "Port number to run the service on")
-	port := flag.Int("port", 8081, "Port number to run the service on")
+	data := flag.String("data", "data", "Path to the directory used for Raft's write-ahead log and persistent state.")
+	nodes := flag.String("nodes", "127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083", "Comma-separated list of cluster peer addresses (host:port).")
+	port := flag.Int("port", 8081, "Port number on which this Raft node will listen for client and peer requests.")
 
 	flag.Parse()
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
 	log := golog.NewLog[internal.LogEntry](*data, 64<<20)
-	log.Load()
+	err := log.Load()
+
+	if err != nil {
+		panic(err)
+	}
 
 	store := internal.NewStore()
 	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), log, store, &internal.Transport{}, internal.NewFSM())
@@ -39,12 +43,6 @@ func main() {
 	r := gin.Default()
 
 	r.GET("/ping", func(c *gin.Context) {
-		c.JSON(200, gin.H{"message": "pong"})
-	})
-
-	r.GET("/profiler", func(c *gin.Context) {
-		internal.StartProfiler()
-
 		c.JSON(200, gin.H{"message": "pong"})
 	})
 
@@ -121,23 +119,15 @@ func main() {
 	defer stop()
 
 	go func() {
-		ticker := time.NewTicker(2000 * time.Millisecond) // TODO
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				log.Commit()
-			case <-ctx.Done():
-				return
-			}
+		if err := r.Run(addr); err != nil && err != http.ErrServerClosed {
+			// log.Fatalf("listen: %s\n", err)
 		}
 	}()
 
-	// go raft.StartApplier()
+	time.Sleep(5 * time.Second)
 
 	go func() {
-		ticker := time.NewTicker(75 * time.Millisecond) // TODO
+		ticker := time.NewTicker(25 * time.Millisecond) // TODO
 		defer ticker.Stop()
 
 		for {
@@ -147,12 +137,6 @@ func main() {
 			case <-ctx.Done():
 				return
 			}
-		}
-	}()
-
-	go func() {
-		if err := r.Run(addr); err != nil && err != http.ErrServerClosed {
-			// log.Fatalf("listen: %s\n", err)
 		}
 	}()
 

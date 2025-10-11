@@ -9,6 +9,8 @@ type CandidateRole struct {
 	raft             *Raft
 	electionDeadline int
 	electionTicks    int
+	majority         int
+	nodes            []string
 	votes            int
 }
 
@@ -20,6 +22,8 @@ func NewCandidateRole(raft *Raft) *CandidateRole {
 		raft:             raft,
 		electionDeadline: electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1),
 		electionTicks:    0,
+		majority:         len(raft.nodes)/2 + 1,
+		nodes:            append([]string(nil), raft.nodes...),
 		votes:            0,
 	}
 }
@@ -30,16 +34,9 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 	currentTerm := c.raft.store.IncrementCurrentTerm()
 
 	c.raft.store.SetVotedFor(c.raft.id)
-
-	id := c.raft.id
-
-	nodes := append([]string(nil), c.raft.nodes...)
-
-	majority := len(c.raft.nodes)/2 + 1
-
 	c.votes++
 
-	if c.votes >= majority {
+	if c.votes >= c.majority {
 		c.raft.becomeLeader(currentTerm)
 
 		return
@@ -47,12 +44,12 @@ func (c *CandidateRole) OnEnter(_ uint64) {
 
 	lastLogEntryIndex, lastLogEntryTerm := GetLastLogEntryIndexAndTerm(c.raft.log)
 
-	for _, node := range nodes {
-		if node == id {
+	for _, node := range c.nodes {
+		if node == c.raft.id {
 			continue
 		}
 
-		go c.sendRequestVote(node, currentTerm, id, lastLogEntryIndex, lastLogEntryTerm)
+		go c.sendRequestVote(node, currentTerm, c.raft.id, lastLogEntryIndex, lastLogEntryTerm)
 	}
 }
 
@@ -65,9 +62,7 @@ func (c *CandidateRole) Tick() {
 	c.electionTicks++
 
 	if c.electionTicks >= c.electionDeadline {
-		currentTerm := c.raft.store.GetCurrentTerm()
-
-		c.raft.becomeCandidate(currentTerm)
+		c.raft.becomeCandidate()
 
 		return
 	}
@@ -157,15 +152,15 @@ func (c *CandidateRole) sendRequestVote(node string, term uint64, candidateId st
 		return
 	}
 
-	if c.raft.role.GetType() != "candidate" || currentTerm != term {
+	isCandidate := c.raft.role.GetType() == "candidate"
+
+	if !isCandidate || currentTerm != term {
 		return
 	}
 
-	majority := len(c.raft.nodes)/2 + 1
-
 	c.votes++
 
-	if c.votes >= majority {
+	if c.votes >= c.majority {
 		c.raft.becomeLeader(term)
 
 		return

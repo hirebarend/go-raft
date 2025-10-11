@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -95,83 +96,21 @@ func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
 	return r.role.HandlePropose(ctx, data)
 }
 
-// func (r *Raft) StartApplier() {
-// 	for {
-// 		r.applierMu.Lock()
+func (r *Raft) becomeCandidate() *CandidateRole {
+	fmt.Printf("[%v] candidate\n", r.id)
 
-// 		for r.store.lastApplied >= r.store.commitIndex {
-// 			r.applierCond.Wait()
-// 		}
-
-// 		start := r.store.lastApplied + 1
-// 		end := r.store.commitIndex
-
-// 		r.applierMu.Unlock()
-
-// 		results := make(map[uint64]any, end-start+1)
-
-// 		for idx := start; idx <= end; idx++ {
-// 			logEntry, err := r.log.ReadAndDeserialize(idx)
-
-// 			if err != nil {
-// 				return
-// 			}
-
-// 			results[idx] = r.fsm.Apply(logEntry.Data)
-// 		}
-
-// 		type notify struct {
-// 			chans  []chan any
-// 			result any
-// 		}
-
-// 		var toNotify []notify
-
-// 		r.applierMu.Lock()
-
-// 		r.mu.Lock()
-
-// 		r.store.lastApplied = end
-
-// 		for idx := start; idx <= end; idx++ {
-// 			if ws, ok := r.pending[idx]; ok {
-// 				delete(r.pending, idx)
-// 				toNotify = append(toNotify, notify{
-// 					chans:  ws,
-// 					result: results[idx],
-// 				})
-// 			}
-// 		}
-
-// 		r.mu.Unlock()
-
-// 		r.applierMu.Unlock()
-
-// 		for i := range toNotify {
-// 			ws := toNotify[i].chans
-// 			res := toNotify[i].result
-
-// 			for _, ch := range ws {
-// 				select {
-// 				case ch <- res:
-// 				default:
-// 				}
-// 			}
-// 		}
-// 	}
-// }
-
-func (r *Raft) becomeCandidate(term uint64) *CandidateRole {
 	role := NewCandidateRole(r)
 
 	r.role = role
 
-	r.role.OnEnter(term)
+	r.role.OnEnter(0)
 
 	return role
 }
 
 func (r *Raft) becomeFollower(term uint64) *FollowerRole {
+	fmt.Printf("[%v][%v] follower\n", r.id, term)
+
 	role := NewFollowerRole(r)
 
 	r.role = role
@@ -182,6 +121,8 @@ func (r *Raft) becomeFollower(term uint64) *FollowerRole {
 }
 
 func (r *Raft) becomeLeader(term uint64) *LeaderRole {
+	fmt.Printf("[%v][%v] leader\n", r.id, term)
+
 	role := NewLeaderRole(r)
 
 	r.role = role
@@ -191,6 +132,7 @@ func (r *Raft) becomeLeader(term uint64) *LeaderRole {
 	return role
 }
 
+// TODO
 func logIsUpToDate(myIndex, myTerm, otherIndex, otherTerm uint64) bool {
 	return (otherTerm > myTerm) || (otherTerm == myTerm && otherIndex >= myIndex)
 }

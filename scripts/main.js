@@ -22,7 +22,7 @@ async function send() {
   await send();
 
   for (let i = 0; i < 10; i++) {
-    const promises = new Array(10).fill(0).map(() => send());
+    const promises = new Array(30).fill(0).map(() => send());
 
     await Promise.all(promises);
   }

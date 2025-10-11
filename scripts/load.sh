@@ -6,6 +6,8 @@ curl -X POST http://localhost:8082/propose \
 
 npx artillery run artillery.yaml
 
+npx artillery run artillery-light.yaml
+
 
 
 

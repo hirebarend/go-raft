@@ -8,6 +8,8 @@ import (
 
 type LeaderRole struct {
 	raft              *Raft
+	applierCh         chan struct{}
+	applierStopCh     chan struct{}
 	heartbeatDeadline int
 	heartbeatTicks    int
 	matchIndex        sync.Map
@@ -18,7 +20,9 @@ type LeaderRole struct {
 func NewLeaderRole(raft *Raft) *LeaderRole {
 	return &LeaderRole{
 		raft:              raft,
-		heartbeatDeadline: 15,
+		applierCh:         make(chan struct{}, 1),
+		applierStopCh:     make(chan struct{}),
+		heartbeatDeadline: 4,
 		heartbeatTicks:    0,
 		pending:           make(map[uint64][]chan any),
 	}
@@ -58,7 +62,7 @@ func (l *LeaderRole) OnEnter(term uint64) {
 		Term: term,
 	}
 
-	_, err := l.raft.log.SerializeAndWrite(&logEntry)
+	_, err := l.raft.log.SerializeWrite(&logEntry)
 
 	if err != nil {
 		l.raft.becomeFollower(term)
@@ -82,9 +86,12 @@ func (l *LeaderRole) OnEnter(term uint64) {
 	l.sendAppendEntriesToAllNodes()
 
 	l.tryToAdvanceCommitIndex()
+
+	go l.applier()
 }
 
 func (l *LeaderRole) OnExit() {
+	l.stopApplier()
 }
 
 func (l *LeaderRole) Tick() {
@@ -161,7 +168,7 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 		Term: currentTerm,
 	}
 
-	index, err := l.raft.log.SerializeAndWrite(&logEntry)
+	index, err := l.raft.log.SerializeWriteCommit(&logEntry)
 
 	if err != nil {
 		return nil, err
@@ -169,7 +176,9 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 
 	ch := make(chan any, 1)
 
+	l.raft.mu.Lock()
 	l.pending[index] = append(l.pending[index], ch)
+	l.raft.mu.Unlock()
 
 	// l.sendAppendEntriesToAllNodesLocked()
 
@@ -189,6 +198,7 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 	case res := <-ch:
 		return res, nil
 	case <-ctx.Done():
+		l.raft.mu.Lock()
 		ws := l.pending[index]
 		if len(ws) > 0 {
 			for i := range ws {
@@ -204,8 +214,38 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 				delete(l.pending, index)
 			}
 		}
+		l.raft.mu.Unlock()
 
 		return nil, ctx.Err()
+	}
+}
+
+func (l *LeaderRole) applier() {
+	for {
+		select {
+		case <-l.applierCh:
+			for {
+				l.applyToFiniteStateMachine()
+
+				select {
+				case <-l.applierCh:
+					continue
+				default:
+				}
+				break
+			}
+		case <-l.applierStopCh:
+			return
+		}
+	}
+}
+
+func (l *LeaderRole) stopApplier() { close(l.applierStopCh) }
+
+func (l *LeaderRole) triggerApplier() {
+	select {
+	case l.applierCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -218,7 +258,7 @@ func (l *LeaderRole) applyToFiniteStateMachine() {
 	}
 
 	for idx := lastApplied + 1; idx <= commitIndex; idx++ {
-		entry, err := l.raft.log.ReadAndDeserialize(idx)
+		logEntry, err := l.raft.log.ReadDeserialize(idx)
 
 		if err != nil {
 			break
@@ -226,18 +266,20 @@ func (l *LeaderRole) applyToFiniteStateMachine() {
 
 		var result any
 
-		if len(entry.Data) > 0 {
-			result = l.raft.fsm.Apply(entry.Data)
+		if len(logEntry.Data) > 0 {
+			result = l.raft.fsm.Apply(logEntry.Data)
 		}
 
+		l.raft.mu.Lock()
 		waiters := l.pending[idx]
 
 		if len(waiters) > 0 {
 			delete(l.pending, idx)
 		}
+		l.raft.mu.Unlock()
 
 		for _, ch := range waiters {
-			if result == nil && len(entry.Data) > 0 {
+			if result == nil && len(logEntry.Data) > 0 {
 				result = struct{}{}
 			}
 			ch <- result
@@ -278,7 +320,7 @@ func (l *LeaderRole) tryToAdvanceCommitIndex() {
 		return
 	}
 
-	logEntry, err := l.raft.log.ReadAndDeserialize(candidate)
+	logEntry, err := l.raft.log.ReadDeserialize(candidate)
 
 	if err != nil {
 		return
@@ -291,7 +333,7 @@ func (l *LeaderRole) tryToAdvanceCommitIndex() {
 	if candidate > l.raft.store.commitIndex.Load() {
 		l.raft.setCommitIndex(candidate)
 
-		l.applyToFiniteStateMachine()
+		l.triggerApplier()
 	}
 }
 
@@ -326,7 +368,7 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 		var prevLogEntryTerm uint64
 
 		if prevLogEntryIndex > 0 {
-			logEntry, err := l.raft.log.ReadAndDeserialize(prevLogEntryIndex)
+			logEntry, err := l.raft.log.ReadDeserialize(prevLogEntryIndex)
 
 			if err == nil {
 				prevLogEntryTerm = logEntry.Term
@@ -347,7 +389,7 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 			logEntries = make([]LogEntry, 0, to-next.(uint64)+1)
 
 			for i := next.(uint64); i <= to; i++ {
-				logEntry, err := l.raft.log.ReadAndDeserialize(i)
+				logEntry, err := l.raft.log.ReadDeserialize(i)
 
 				if err == nil {
 					logEntries = append(logEntries, *logEntry)
@@ -363,6 +405,9 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 
 func (l *LeaderRole) sendAppendEntriesToNode(node string, term uint64, leaderId string, prevLogEntryIndex uint64, prevLogEntryTerm uint64, logEntries []LogEntry, leaderCommitIndex uint64) {
 	t, success, conflictIndex, conflictTerm := l.raft.transport.AppendEntries(node, term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
+
+	l.raft.mu.Lock()
+	defer l.raft.mu.Unlock()
 
 	if t > l.raft.store.GetCurrentTerm() {
 		l.raft.becomeFollower(t)

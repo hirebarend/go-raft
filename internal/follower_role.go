@@ -12,8 +12,8 @@ type FollowerRole struct {
 }
 
 func NewFollowerRole(raft *Raft) *FollowerRole {
-	electionTimeoutMin := 15 * 5
-	electionTimeoutMax := 15 * 6
+	electionTimeoutMin := 4 * 3
+	electionTimeoutMax := 4 * 5
 
 	return &FollowerRole{
 		raft:             raft,
@@ -48,9 +48,7 @@ func (f *FollowerRole) Tick() {
 	f.electionTicks++
 
 	if f.electionTicks >= f.electionDeadline {
-		currentTerm := f.raft.store.GetCurrentTerm()
-
-		f.raft.becomeCandidate(currentTerm)
+		f.raft.becomeCandidate()
 
 		return
 	}
@@ -82,6 +80,8 @@ func (f *FollowerRole) HandleAppendEntries(
 		return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 	}
 
+	f.resetElectionTimer()
+
 	lastLogEntryIndex, _ := f.raft.log.GetLastIndex()
 
 	if prevLogEntryIndex > lastLogEntryIndex {
@@ -91,7 +91,7 @@ func (f *FollowerRole) HandleAppendEntries(
 	}
 
 	if prevLogEntryIndex > 0 {
-		prevLogEntry, err := f.raft.log.ReadAndDeserialize(prevLogEntryIndex)
+		prevLogEntry, err := f.raft.log.ReadDeserialize(prevLogEntryIndex)
 
 		if err != nil || prevLogEntry == nil {
 			return currentTerm, false, prevLogEntryIndex, 0
@@ -103,7 +103,7 @@ func (f *FollowerRole) HandleAppendEntries(
 			conflictIndex := prevLogEntryIndex
 
 			for conflictIndex > 1 {
-				e, err := f.raft.log.ReadAndDeserialize(conflictIndex - 1)
+				e, err := f.raft.log.ReadDeserialize(conflictIndex - 1)
 
 				if err != nil || e == nil || e.Term != conflictTerm {
 					break
@@ -116,8 +116,6 @@ func (f *FollowerRole) HandleAppendEntries(
 		}
 	}
 
-	f.resetElectionTimer()
-
 	f.raft.store.SetLeaderId(leaderId)
 
 	f.appendEntries(prevLogEntryIndex, logEntries)
@@ -126,7 +124,7 @@ func (f *FollowerRole) HandleAppendEntries(
 
 	f.raft.mu.Unlock()
 
-	f.applyToFiniteStateMachine()
+	f.applyToFiniteStateMachine() // TODO
 
 	return currentTerm, true, 0, 0
 }
@@ -178,6 +176,8 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 	myLastLogEntryIndex, myLastLogEntryTerm := GetLastLogEntryIndexAndTerm(f.raft.log)
 
 	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {
+		f.raft.mu.Unlock()
+
 		return currentTerm, false
 	}
 
@@ -198,7 +198,7 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 	for i, entry := range logEntries {
 		idx := prevLogEntryIndex + 1 + uint64(i)
 
-		logEntryAtIdx, err := f.raft.log.ReadAndDeserialize(idx)
+		logEntryAtIdx, err := f.raft.log.ReadDeserialize(idx)
 
 		if err == nil {
 			if logEntryAtIdx.Term != entry.Term {
@@ -206,7 +206,7 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 
 				if err == nil {
 					for _, logEntry := range logEntries[i:] {
-						_, err := f.raft.log.SerializeAndWrite(&logEntry)
+						_, err := f.raft.log.SerializeWrite(&logEntry)
 
 						if err != nil {
 							break
@@ -223,7 +223,7 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 		}
 
 		for _, logEntry := range logEntries[i:] {
-			_, err := f.raft.log.SerializeAndWrite(&logEntry)
+			_, err := f.raft.log.SerializeWrite(&logEntry)
 
 			if err != nil {
 				break
@@ -245,14 +245,14 @@ func (f *FollowerRole) applyToFiniteStateMachine() {
 	}
 
 	for idx := lastApplied + 1; idx <= commitIndex; idx++ {
-		entry, err := f.raft.log.ReadAndDeserialize(idx)
+		logEntry, err := f.raft.log.ReadDeserialize(idx)
 
 		if err != nil {
 			break
 		}
 
-		if len(entry.Data) > 0 {
-			f.raft.fsm.Apply(entry.Data)
+		if len(logEntry.Data) > 0 {
+			f.raft.fsm.Apply(logEntry.Data)
 		}
 
 		f.raft.store.lastApplied = idx
@@ -260,8 +260,8 @@ func (f *FollowerRole) applyToFiniteStateMachine() {
 }
 
 func (f *FollowerRole) resetElectionTimer() {
-	electionTimeoutMin := 15 * 5
-	electionTimeoutMax := 15 * 6
+	electionTimeoutMin := 4 * 3
+	electionTimeoutMax := 4 * 5
 
 	f.electionDeadline = electionTimeoutMin + f.raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1)
 	f.electionTicks = 0

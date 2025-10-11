@@ -4,7 +4,7 @@ go 1.25.0
 
 require github.com/gin-gonic/gin v1.10.1
 
-require github.com/hirebarend/go-log v0.0.0-20251004194138-ed6736bb4153 // indirect
+require github.com/hirebarend/go-log v0.0.0-20251010090917-e2e981515fc6 // indirect
 
 require (
 	github.com/bytedance/sonic v1.11.6 // indirect
