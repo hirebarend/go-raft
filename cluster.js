@@ -28,11 +28,12 @@ function spawnNode(node) {
 
   result.childProcess.on("exit", (code, signal) => {
     result.alive = false;
+    console.log(`[127.0.0.1:${node.port}] - exit`);
   });
 
   result.childProcess.on("error", (err) => {
     result.alive = false;
-    console.log(`unable to start 127.0.0.1:${node.port}`);
+    console.log(`[127.0.0.1:${node.port}] - error`);
   });
 
   return result;
@@ -52,7 +53,13 @@ async function killNode(obj) {
     process.kill(obj.childProcess.pid, "SIGTERM");
   } catch {}
 
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+  for (let i = 0; i < 10; i++) {
+    if (!isAlive(obj.childProcess.pid)) {
+      break;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 
   if (isAlive(obj.childProcess.pid)) {
     try {
@@ -76,52 +83,60 @@ let interval = null;
   interval = setInterval(async () => {
     const obj = arr[Math.floor(Math.random() * arr.length)];
 
-    console.log(`[${obj.node.port}] shutting down`);
+    console.log(`[${obj.node.port}] - killing`);
     await killNode(obj);
 
     await new Promise((resolve) => setTimeout(resolve, 5000));
 
-    console.log(`[${obj.node.port}] starting`);
+    console.log(`[${obj.node.port}] - spawning`);
     await spawnNode(obj.node);
   }, 30000);
 })();
 
-process.on("SIGINT", () => {
+process.on("SIGINT", async () => {
+  clearInterval(interval);
+
   for (const x of arr) {
-    killNode(x);
+    await killNode(x);
   }
 
-  new Promise((resolve) => setTimeout(resolve, 2000)).then(() => {
-    process.exit(130);
-  });
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  process.exit(130);
 });
 
-process.on("SIGTERM", () => {
+process.on("SIGTERM", async () => {
+  clearInterval(interval);
+
   for (const x of arr) {
-    killNode(x);
+    await killNode(x);
   }
 
-  new Promise((resolve) => setTimeout(resolve, 2000)).then(() => {
-    process.exit(143);
-  });
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  process.exit(143);
 });
 
 process.on("uncaughtException", async () => {
+  clearInterval(interval);
+
   for (const x of arr) {
-    killNode(x);
+    await killNode(x);
   }
 
-  new Promise((resolve) => setTimeout(resolve, 2000)).then(() => {
-    process.exit(1);
-  });
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  process.exit(1);
 });
 
 process.on("unhandledRejection", async () => {
+  clearInterval(interval);
+
   for (const x of arr) {
-    killNode(x);
+    await killNode(x);
   }
 
-  new Promise((resolve) => setTimeout(resolve, 2000)).then(() => {
-    process.exit(1);
-  });
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  process.exit(1);
 });
