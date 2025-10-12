@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"fmt"
 )
 
 type CandidateRole struct {
@@ -91,9 +90,7 @@ func (c *CandidateRole) HandlePreVote(term uint64, candidateId string, lastLogEn
 		return currentTerm, false
 	}
 
-	myLastLogEntryIndex, myLastLogEntryTerm := GetLastLogEntryIndexAndTerm(c.raft.log)
-
-	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {
+	if !IsEqualOrMoreRecent(c.raft.log, lastLogEntryIndex, lastLogEntryTerm) {
 		return currentTerm, false
 	}
 
@@ -113,7 +110,7 @@ func (c *CandidateRole) HandleRequestVote(term uint64, candidateId string, lastL
 }
 
 func (c *CandidateRole) HandlePropose(ctx context.Context, data []byte) (any, error) {
-	return nil, fmt.Errorf("not leader")
+	return c.raft.transport.Propose(c.raft.GetLeaderId(), data)
 }
 
 func (c *CandidateRole) sendRequestVote(node string, term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) {

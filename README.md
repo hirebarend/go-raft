@@ -1,7 +1,9 @@
 ```bash
 go build . 
 
-./scripts/example.sh
+chmod +x ./scripts/start-cluster.sh
+
+./scripts/start-cluster.sh
 ```
 
 ```bash

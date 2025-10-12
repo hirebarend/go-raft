@@ -4,9 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -18,11 +20,9 @@ import (
 )
 
 func main() {
-	// if os.Getenv("ENV") == "PRODUCTION" {
-	// 	gin.SetMode(gin.ReleaseMode)
-	// }
-
-	gin.SetMode(gin.ReleaseMode)
+	if os.Getenv("ENV") == "PRODUCTION" {
+		gin.SetMode(gin.ReleaseMode)
+	}
 
 	data := flag.String("data", "data", "Path to the directory used for Raft's write-ahead log and persistent state.")
 	nodes := flag.String("nodes", "127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083", "Comma-separated list of cluster peer addresses (host:port).")
@@ -39,28 +39,12 @@ func main() {
 		panic(err)
 	}
 
-	store := internal.NewStore()
-	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), log, store, &internal.Transport{}, internal.NewFSM())
+	store := internal.NewStore(filepath.Join(*data, "store.data"))
+	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), log, store, internal.NewTransport(), internal.NewFSM())
 
 	r := gin.New()
 
-	r.GET("/ping", func(c *gin.Context) {
-		c.JSON(200, gin.H{"message": "pong"})
-	})
-
-	r.GET("/disable", func(c *gin.Context) {
-		raft.Disable()
-
-		c.JSON(200, gin.H{"message": "disabled"})
-	})
-
-	r.GET("/enable", func(c *gin.Context) {
-		raft.Enable()
-
-		c.JSON(200, gin.H{"message": "enabled"})
-	})
-
-	r.POST("/append-entries", func(c *gin.Context) {
+	r.POST("/rpc/append-entries", func(c *gin.Context) {
 		var request internal.AppendEntriesRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
@@ -79,7 +63,7 @@ func main() {
 		})
 	})
 
-	r.POST("/pre-vote", func(c *gin.Context) {
+	r.POST("/rpc/pre-vote", func(c *gin.Context) {
 		var request internal.PreVoteRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
@@ -99,7 +83,7 @@ func main() {
 		})
 	})
 
-	r.POST("/request-vote", func(c *gin.Context) {
+	r.POST("/rpc/request-vote", func(c *gin.Context) {
 		var request internal.RequestVoteRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
@@ -119,13 +103,54 @@ func main() {
 		})
 	})
 
+	r.POST("/rpc/propose", func(c *gin.Context) {
+		body, err := io.ReadAll(c.Request.Body)
+
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
+			return
+		}
+
+		result, err := raft.Propose(c, body)
+
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
+
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"result": result,
+		})
+	})
+
+	r.GET("/ping", func(c *gin.Context) {
+		c.JSON(200, gin.H{"message": "pong"})
+	})
+
+	r.GET("/disable", func(c *gin.Context) {
+		raft.Disable()
+
+		c.JSON(200, gin.H{"message": "disabled"})
+	})
+
+	r.GET("/enable", func(c *gin.Context) {
+		raft.Enable()
+
+		c.JSON(200, gin.H{"message": "enabled"})
+	})
+
 	r.POST("/propose", func(c *gin.Context) {
 		result, err := raft.Propose(c, []byte(uuid.New().String()))
 
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
+
+			return
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"ok":        err == nil,
-			"result":    result,
-			"leader_id": raft.GetLeaderId(),
+			"result": result,
 		})
 	})
 
@@ -137,8 +162,6 @@ func main() {
 			// log.Fatalf("listen: %s\n", err)
 		}
 	}()
-
-	time.Sleep(5 * time.Second)
 
 	go func() {
 		ticker := time.NewTicker(25 * time.Millisecond) // TODO

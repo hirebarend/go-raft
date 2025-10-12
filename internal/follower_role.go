@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"fmt"
 )
 
 type FollowerRole struct {
@@ -123,9 +122,7 @@ func (f *FollowerRole) HandlePreVote(term uint64, candidateId string, lastLogEnt
 		return currentTerm, false
 	}
 
-	myLastLogEntryIndex, myLastLogEntryTerm := GetLastLogEntryIndexAndTerm(f.raft.log)
-
-	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {
+	if !IsEqualOrMoreRecent(f.raft.log, lastLogEntryIndex, lastLogEntryTerm) {
 		return currentTerm, false
 	}
 
@@ -145,17 +142,15 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 		return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 	}
 
+	f.resetElectionTimer()
+
 	if f.raft.store.GetVotedFor() != "" && f.raft.store.GetVotedFor() != candidateId {
 		return currentTerm, false
 	}
 
-	myLastLogEntryIndex, myLastLogEntryTerm := GetLastLogEntryIndexAndTerm(f.raft.log)
-
-	if !logIsUpToDate(myLastLogEntryIndex, myLastLogEntryTerm, lastLogEntryIndex, lastLogEntryTerm) {
+	if !IsEqualOrMoreRecent(f.raft.log, lastLogEntryIndex, lastLogEntryTerm) {
 		return currentTerm, false
 	}
-
-	f.resetElectionTimer()
 
 	f.raft.store.SetVotedFor(candidateId)
 
@@ -163,7 +158,7 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 }
 
 func (f *FollowerRole) HandlePropose(ctx context.Context, data []byte) (any, error) {
-	return nil, fmt.Errorf("not leader")
+	return f.raft.transport.Propose(f.raft.GetLeaderId(), data)
 }
 
 func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogEntry) {

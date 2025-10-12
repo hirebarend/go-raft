@@ -8,13 +8,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"sync"
 	"time"
 )
 
 type Transport struct {
 	client *http.Client
-	once   sync.Once
 }
 
 type AppendEntriesRequest struct {
@@ -57,26 +55,34 @@ type RequestVoteResponse struct {
 	VoteGranted bool   `json:"voteGranted"`
 }
 
-func (t *Transport) ensureClient() {
-	t.once.Do(func() {
-		t.client = &http.Client{
-			Timeout: 2 * time.Second,
-			Transport: &http.Transport{
-				Proxy: http.ProxyFromEnvironment,
-				DialContext: (&net.Dialer{
-					Timeout:   1 * time.Second,
-					KeepAlive: 30 * time.Second,
-				}).DialContext,
-				TLSHandshakeTimeout:   1 * time.Second,
-				ResponseHeaderTimeout: 1500 * time.Millisecond,
-				ExpectContinueTimeout: 1 * time.Second,
-				IdleConnTimeout:       90 * time.Second,
-				MaxIdleConns:          100,
-				MaxIdleConnsPerHost:   10,
-			},
-		}
-	})
+func NewTransport() *Transport {
+	tr := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:       300 * time.Millisecond,
+			KeepAlive:     15 * time.Second,
+			FallbackDelay: -1,
+		}).DialContext,
+		Proxy:                  nil,
+		TLSHandshakeTimeout:    500 * time.Millisecond,
+		ResponseHeaderTimeout:  800 * time.Millisecond,
+		ExpectContinueTimeout:  0,
+		IdleConnTimeout:        30 * time.Second,
+		MaxConnsPerHost:        128,
+		MaxIdleConnsPerHost:    128,
+		MaxIdleConns:           512,
+		ForceAttemptHTTP2:      true,
+		MaxResponseHeaderBytes: 4 << 10, // 4 KiB
+		DisableCompression:     true,
+	}
+
+	return &Transport{
+		client: &http.Client{
+			Transport: tr,
+			Timeout:   0,
+		},
+	}
 }
+
 func (t *Transport) AppendEntries(
 	node string,
 	term uint64,
@@ -101,11 +107,9 @@ func (t *Transport) AppendEntries(
 		return term, false, 0, 0
 	}
 
-	t.ensureClient()
+	url := fmt.Sprintf("http://%s/rpc/append-entries", node)
 
-	url := fmt.Sprintf("http://%s/append-entries", node)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
@@ -150,6 +154,60 @@ func (t *Transport) AppendEntries(
 	return appendEntriesResponse.Term, appendEntriesResponse.Success, appendEntriesResponse.ConflictIndex, appendEntriesResponse.ConflictTerm
 }
 
+func (t *Transport) Propose(
+	node string,
+	data []byte,
+) (any, error) {
+	url := fmt.Sprintf("http://%s/rpc/propose", node)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+
+	if err != nil {
+		return nil, err
+	}
+
+	request.Header.Set("Content-Type", "application/octet-stream")
+
+	response, err := t.client.Do(request)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		io.Copy(io.Discard, response.Body)
+
+		response.Body.Close()
+	}()
+
+	if response.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+
+	const maxBody = 1 << 20
+
+	reader := io.LimitReader(response.Body, maxBody)
+
+	var result struct {
+		Result any `json:"result"`
+	}
+
+	decoder := json.NewDecoder(reader)
+
+	if err := decoder.Decode(&result); err != nil {
+		return nil, err
+	}
+
+	if decoder.More() {
+		return nil, nil
+	}
+
+	return result.Result, nil
+}
+
 func (t *Transport) PreVote(
 	node string,
 	term uint64,
@@ -170,11 +228,9 @@ func (t *Transport) PreVote(
 		return term, false
 	}
 
-	t.ensureClient()
+	url := fmt.Sprintf("http://%s/rpc/pre-vote", node)
 
-	url := fmt.Sprintf("http://%s/pre-vote", node)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
@@ -239,11 +295,9 @@ func (t *Transport) RequestVote(
 		return term, false
 	}
 
-	t.ensureClient()
+	url := fmt.Sprintf("http://%s/rpc/request-vote", node)
 
-	url := fmt.Sprintf("http://%s/request-vote", node)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))

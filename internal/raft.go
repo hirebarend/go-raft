@@ -215,11 +215,6 @@ func (r *Raft) becomeLeader(term uint64) *LeaderRole {
 	return role
 }
 
-// TODO
-func logIsUpToDate(myIndex, myTerm, otherIndex, otherTerm uint64) bool {
-	return (otherTerm > myTerm) || (otherTerm == myTerm && otherIndex >= myIndex)
-}
-
 func (r *Raft) setCommitIndex(commitIndex uint64) {
 	lastLogEntryIndex, err := r.log.GetLastIndex()
 

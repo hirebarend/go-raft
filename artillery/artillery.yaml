@@ -1,15 +1,12 @@
+# npx artillery run artillery.yaml
 config:
-  target: "http://localhost:8084"
+  target: "http://localhost:8082"
   http:
-    timeout: 120
+    timeout: 5
   phases:
-    - duration: 30
-      arrivalRate: 10
-      rampTo: 30
-
-    - name: sustain
-      duration: 60
-      arrivalRate: 30
+    - duration: 20
+      arrivalRate: 5
+      rampTo: 20
 
   defaults:
     headers:

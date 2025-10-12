@@ -51,6 +51,20 @@ func GetLastLogEntryIndexOfTerm(log *golog.Log[LogEntry], term uint64) uint64 {
 	return 0
 }
 
+func IsEqualOrMoreRecent(log *golog.Log[LogEntry], index, term uint64) bool {
+	myLastLogEntryIndex, myLastLogEntryTerm := GetLastLogEntryIndexAndTerm(log)
+
+	if term > myLastLogEntryTerm {
+		return true
+	}
+
+	if term == myLastLogEntryTerm && index >= myLastLogEntryIndex {
+		return true
+	}
+
+	return false
+}
+
 func LogEntryMatchesTermAtIndex(log *golog.Log[LogEntry], index uint64, term uint64) bool {
 	if index == 0 {
 		return true
