@@ -3,7 +3,7 @@ package internal
 import (
 	"time"
 
-	"github.com/hirebarend/raft-go/counter"
+	"github.com/hirebarend/go-raft/counter"
 )
 
 type FSM struct {

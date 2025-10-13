@@ -62,17 +62,17 @@ func NewTransport() *Transport {
 			KeepAlive:     15 * time.Second,
 			FallbackDelay: -1,
 		}).DialContext,
-		Proxy:                  nil,
-		TLSHandshakeTimeout:    500 * time.Millisecond,
-		ResponseHeaderTimeout:  800 * time.Millisecond,
+		DisableCompression:     true,
 		ExpectContinueTimeout:  0,
+		ForceAttemptHTTP2:      true,
+		Proxy:                  nil,
 		IdleConnTimeout:        30 * time.Second,
 		MaxConnsPerHost:        128,
-		MaxIdleConnsPerHost:    128,
 		MaxIdleConns:           512,
-		ForceAttemptHTTP2:      true,
+		MaxIdleConnsPerHost:    128,
 		MaxResponseHeaderBytes: 4 << 10, // 4 KiB
-		DisableCompression:     true,
+		ResponseHeaderTimeout:  800 * time.Millisecond,
+		TLSHandshakeTimeout:    500 * time.Millisecond,
 	}
 
 	return &Transport{

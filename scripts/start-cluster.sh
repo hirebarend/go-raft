@@ -6,7 +6,7 @@ NUM_NODES=5
 BASE_PORT=8081
 HOST=127.0.0.1
 DATA_ROOT="data"
-BIN="./raft-go"
+BIN="./go-raft"
 
 usage() {
   cat <<EOF

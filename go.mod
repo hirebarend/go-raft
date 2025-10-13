@@ -1,10 +1,10 @@
-module github.com/hirebarend/raft-go
+module github.com/hirebarend/go-raft
 
 go 1.25.0
 
 require github.com/gin-gonic/gin v1.10.1
 
-require github.com/hirebarend/go-log v0.0.0-20251010090917-e2e981515fc6 // indirect
+require github.com/hirebarend/go-log v0.0.0-20251012121450-8f6b7f5c18d0 // indirect
 
 require (
 	github.com/bytedance/sonic v1.11.6 // indirect

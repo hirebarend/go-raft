@@ -16,7 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	golog "github.com/hirebarend/go-log"
-	"github.com/hirebarend/raft-go/internal"
+	"github.com/hirebarend/go-raft/internal"
 )
 
 func main() {
@@ -42,7 +42,7 @@ func main() {
 	store := internal.NewStore(filepath.Join(*data, "store.data"))
 	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), log, store, internal.NewTransport(), internal.NewFSM())
 
-	r := gin.New()
+	r := gin.Default()
 
 	r.POST("/rpc/append-entries", func(c *gin.Context) {
 		var request internal.AppendEntriesRequest
@@ -164,7 +164,7 @@ func main() {
 	}()
 
 	go func() {
-		ticker := time.NewTicker(25 * time.Millisecond) // TODO
+		ticker := time.NewTicker(25 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {

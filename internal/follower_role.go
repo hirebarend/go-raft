@@ -78,30 +78,10 @@ func (f *FollowerRole) HandleAppendEntries(
 		return currentTerm, false, lastLogEntryIndex + 1, 0
 	}
 
-	if prevLogEntryIndex > 0 {
-		prevLogEntry, err := f.raft.log.ReadDeserialize(prevLogEntryIndex)
+	ok, conflictIndex, conflictTerm := f.checkLogConsistency(prevLogEntryIndex, prevLogEntryTerm)
 
-		if err != nil || prevLogEntry == nil {
-			return currentTerm, false, prevLogEntryIndex, 0
-		}
-
-		if prevLogEntry.Term != prevLogEntryTerm {
-			conflictTerm := prevLogEntry.Term
-
-			conflictIndex := prevLogEntryIndex
-
-			for conflictIndex > 1 {
-				e, err := f.raft.log.ReadDeserialize(conflictIndex - 1)
-
-				if err != nil || e == nil || e.Term != conflictTerm {
-					break
-				}
-
-				conflictIndex--
-			}
-
-			return currentTerm, false, conflictIndex, conflictTerm
-		}
+	if !ok {
+		return currentTerm, false, conflictIndex, conflictTerm
 	}
 
 	f.raft.store.SetLeaderId(leaderId)
@@ -110,7 +90,7 @@ func (f *FollowerRole) HandleAppendEntries(
 
 	f.raft.setCommitIndex(leaderCommit)
 
-	f.applyToFiniteStateMachine() // TODO
+	f.applyToFiniteStateMachine()
 
 	return currentTerm, true, 0, 0
 }
@@ -224,6 +204,37 @@ func (f *FollowerRole) applyToFiniteStateMachine() {
 
 		f.raft.store.lastApplied = idx
 	}
+}
+
+func (f *FollowerRole) checkLogConsistency(index, term uint64) (bool, uint64, uint64) {
+	if index == 0 {
+		return true, 0, 0
+	}
+
+	logEntryAtIndex, err := f.raft.log.ReadDeserialize(index)
+
+	if err != nil || logEntryAtIndex == nil {
+		return false, index, 0
+	}
+
+	if logEntryAtIndex.Term == term {
+		return true, 0, 0
+	}
+
+	conflictTerm := logEntryAtIndex.Term
+	conflictIndex := index
+
+	for conflictIndex > 1 {
+		logEntry, err := f.raft.log.ReadDeserialize(conflictIndex - 1)
+
+		if err != nil || logEntry == nil || logEntry.Term != conflictTerm {
+			break
+		}
+
+		conflictIndex--
+	}
+
+	return false, conflictIndex, conflictTerm
 }
 
 func (f *FollowerRole) resetElectionTimer() {
