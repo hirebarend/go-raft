@@ -24,7 +24,7 @@ type RaftRole interface {
 		prevLogEntryIndex uint64,
 		prevLogEntryTerm uint64,
 		logEntries []LogEntry,
-		leaderCommit uint64,
+		leaderCommitIndex uint64,
 	) (uint64, bool, uint64, uint64)
 
 	HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool)
@@ -125,7 +125,7 @@ func (r *Raft) HandleAppendEntries(
 	prevLogEntryIndex uint64,
 	prevLogEntryTerm uint64,
 	logEntries []LogEntry,
-	leaderCommit uint64,
+	leaderCommitIndex uint64,
 ) (uint64, bool, uint64, uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -134,7 +134,7 @@ func (r *Raft) HandleAppendEntries(
 		return r.store.GetCurrentTerm(), false, 0, 0
 	}
 
-	return r.role.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
+	return r.role.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
 }
 
 func (r *Raft) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {

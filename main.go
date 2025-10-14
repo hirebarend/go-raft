@@ -52,7 +52,7 @@ func main() {
 		}
 
 		term, success, conflictIndex, conflictTerm := raft.HandleAppendEntries(
-			request.Term, request.LeaderId, request.PrevLogIndex, request.PrevLogTerm, request.Entries, request.LeaderCommit,
+			request.Term, request.LeaderId, request.PrevLogEntryIndex, request.PrevLogEntryTerm, request.LogEntries, request.LeaderCommitIndex,
 		)
 
 		c.JSON(http.StatusOK, internal.AppendEntriesResponse{
@@ -73,8 +73,8 @@ func main() {
 		term, voteGranted := raft.HandlePreVote(
 			request.Term,
 			request.CandidateID,
-			request.LastLogIndex,
-			request.LastLogTerm,
+			request.LastLogEntryIndex,
+			request.LastLogEntryTerm,
 		)
 
 		c.JSON(http.StatusOK, internal.PreVoteResponse{
@@ -93,8 +93,8 @@ func main() {
 		term, voteGranted := raft.HandleRequestVote(
 			request.Term,
 			request.CandidateID,
-			request.LastLogIndex,
-			request.LastLogTerm,
+			request.LastLogEntryIndex,
+			request.LastLogEntryTerm,
 		)
 
 		c.JSON(http.StatusOK, internal.RequestVoteResponse{
@@ -164,7 +164,7 @@ func main() {
 	}()
 
 	go func() {
-		ticker := time.NewTicker(25 * time.Millisecond)
+		ticker := time.NewTicker(350 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {

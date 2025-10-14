@@ -3,7 +3,6 @@ package internal
 import (
 	"context"
 	"sort"
-	"sync"
 )
 
 type LeaderRole struct {
@@ -12,8 +11,9 @@ type LeaderRole struct {
 	applierStopCh     chan struct{}
 	heartbeatDeadline int
 	heartbeatTicks    int
-	matchIndex        sync.Map
-	nextIndex         sync.Map
+	inflight          map[string]bool
+	matchIndex        map[string]uint64
+	nextIndex         map[string]uint64
 	pending           map[uint64][]chan any
 }
 
@@ -24,6 +24,9 @@ func NewLeaderRole(raft *Raft) *LeaderRole {
 		applierStopCh:     make(chan struct{}),
 		heartbeatDeadline: 4,
 		heartbeatTicks:    0,
+		inflight:          make(map[string]bool),
+		matchIndex:        make(map[string]uint64),
+		nextIndex:         make(map[string]uint64),
 		pending:           make(map[uint64][]chan any),
 	}
 }
@@ -50,12 +53,12 @@ func (l *LeaderRole) OnEnter(term uint64) {
 			continue
 		}
 
-		l.matchIndex.Store(p, uint64(0))
-		l.nextIndex.Store(p, lastLogEntryIndex+1)
+		l.matchIndex[p] = 0
+		l.nextIndex[p] = lastLogEntryIndex + 1
 	}
 
-	l.matchIndex.Store(l.raft.id, lastLogEntryIndex+1)
-	l.nextIndex.Store(l.raft.id, lastLogEntryIndex+1)
+	l.matchIndex[l.raft.id] = lastLogEntryIndex + 1
+	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
 
 	logEntry := LogEntry{
 		Data: nil,
@@ -80,8 +83,8 @@ func (l *LeaderRole) OnEnter(term uint64) {
 		return
 	}
 
-	l.matchIndex.Store(l.raft.id, lastLogEntryIndex)
-	l.nextIndex.Store(l.raft.id, lastLogEntryIndex+1)
+	l.matchIndex[l.raft.id] = lastLogEntryIndex
+	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
 
 	l.sendAppendEntriesToAllNodes()
 
@@ -160,22 +163,20 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 	ch := make(chan any, 1)
 
 	l.raft.mu.Lock()
+
 	l.pending[index] = append(l.pending[index], ch)
+
+	l.sendAppendEntriesToAllNodes()
+
+	if l.matchIndex[l.raft.id] < index {
+		l.matchIndex[l.raft.id] = index
+	}
+
+	if l.nextIndex[l.raft.id] < index+1 {
+		l.nextIndex[l.raft.id] = index + 1
+	}
+
 	l.raft.mu.Unlock()
-
-	// l.sendAppendEntriesToAllNodesLocked()
-
-	value, _ := l.matchIndex.Load(l.raft.id)
-
-	if value.(uint64) < index {
-		l.matchIndex.Store(l.raft.id, index)
-	}
-
-	value, _ = l.nextIndex.Load(l.raft.id)
-
-	if value.(uint64) < index+1 {
-		l.nextIndex.Store(l.raft.id, index+1)
-	}
 
 	select {
 	case res := <-ch:
@@ -280,9 +281,7 @@ func (l *LeaderRole) tryToAdvanceCommitIndex() {
 	matches := make([]uint64, 0, len(l.raft.nodes))
 
 	for _, n := range l.raft.nodes {
-		value, _ := l.matchIndex.Load(n)
-
-		matches = append(matches, value.(uint64))
+		matches = append(matches, l.matchIndex[n])
 	}
 
 	if len(matches) == 0 {
@@ -336,16 +335,22 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 			continue
 		}
 
-		next, _ := l.nextIndex.Load(node)
+		if l.inflight[node] {
+			continue
+		}
 
-		if next == 0 {
+		l.inflight[node] = true
+
+		next := l.nextIndex[node]
+
+		if l.nextIndex[node] == 0 {
 			next = lastLogEntryIndex + 1
 		}
 
 		var prevLogEntryIndex uint64
 
-		if next.(uint64) > 0 {
-			prevLogEntryIndex = next.(uint64) - 1
+		if next > 0 {
+			prevLogEntryIndex = next - 1
 		}
 
 		var prevLogEntryTerm uint64
@@ -360,18 +365,18 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 
 		var logEntries []LogEntry
 
-		if next.(uint64) <= lastLogEntryIndex {
+		if next <= lastLogEntryIndex {
 			const maxBatch = 2 * 1024
 			to := lastLogEntryIndex
-			count := to - next.(uint64) + 1
+			count := to - next + 1
 
 			if count > maxBatch {
-				to = next.(uint64) + maxBatch - 1
+				to = next + maxBatch - 1
 			}
 
-			logEntries = make([]LogEntry, 0, to-next.(uint64)+1)
+			logEntries = make([]LogEntry, 0, to-next+1)
 
-			for i := next.(uint64); i <= to; i++ {
+			for i := next; i <= to; i++ {
 				logEntry, err := l.raft.log.ReadDeserialize(i)
 
 				if err == nil {
@@ -392,6 +397,10 @@ func (l *LeaderRole) sendAppendEntriesToNode(node string, term uint64, leaderId 
 	l.raft.mu.Lock()
 	defer l.raft.mu.Unlock()
 
+	if l.inflight[node] {
+		l.inflight[node] = false
+	}
+
 	if t > l.raft.store.GetCurrentTerm() {
 		l.raft.becomeFollower(t)
 
@@ -409,41 +418,33 @@ func (l *LeaderRole) sendAppendEntriesToNode(node string, term uint64, leaderId 
 			lastSent = prevLogEntryIndex + uint64(len(logEntries))
 		}
 
-		value, _ := l.matchIndex.Load(node)
-
-		if value.(uint64) < lastSent {
-			l.matchIndex.Store(node, lastSent)
+		if l.matchIndex[node] < lastSent {
+			l.matchIndex[node] = lastSent
 		}
 
 		next := lastSent + 1
 
-		value, _ = l.nextIndex.Load(node)
-
-		if value.(uint64) < next {
-			l.nextIndex.Store(node, next)
+		if l.nextIndex[node] < next {
+			l.nextIndex[node] = next
 		}
 
 		l.tryToAdvanceCommitIndex()
 	} else {
-		value, _ := l.nextIndex.Load(node)
-
-		if value.(uint64) > 1 {
+		if l.nextIndex[node] > 1 {
 			if conflictTerm != 0 {
 				lastOfTerm := GetLastLogEntryIndexOfTerm(l.raft.log, conflictTerm)
 
 				if lastOfTerm > 0 {
-					l.nextIndex.Store(node, lastOfTerm+1)
+					l.nextIndex[node] = lastOfTerm + 1
 				} else {
-					l.nextIndex.Store(node, conflictIndex)
+					l.nextIndex[node] = conflictIndex
 				}
 			} else {
-				l.nextIndex.Store(node, conflictIndex)
+				l.nextIndex[node] = conflictIndex
 			}
 
-			value, _ = l.nextIndex.Load(node)
-
-			if value.(uint64) < 1 {
-				l.nextIndex.Store(node, uint64(1))
+			if l.nextIndex[node] < 1 {
+				l.nextIndex[node] = 1
 			}
 		}
 	}

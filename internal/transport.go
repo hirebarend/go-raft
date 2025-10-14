@@ -16,12 +16,12 @@ type Transport struct {
 }
 
 type AppendEntriesRequest struct {
-	Term         uint64     `json:"term"`
-	LeaderId     string     `json:"leaderId"`
-	PrevLogIndex uint64     `json:"prevLogIndex"`
-	PrevLogTerm  uint64     `json:"prevLogTerm"`
-	Entries      []LogEntry `json:"entries"`
-	LeaderCommit uint64     `json:"leaderCommit"`
+	Term              uint64     `json:"term"`
+	LeaderId          string     `json:"leader_id"`
+	PrevLogEntryIndex uint64     `json:"prev_log_entry_index"`
+	PrevLogEntryTerm  uint64     `json:"prev_log_entry_term"`
+	LogEntries        []LogEntry `json:"log_entries"`
+	LeaderCommitIndex uint64     `json:"leader_commit_index"`
 }
 
 type AppendEntriesResponse struct {
@@ -32,27 +32,27 @@ type AppendEntriesResponse struct {
 }
 
 type PreVoteRequest struct {
-	Term         uint64 `json:"term"`
-	CandidateID  string `json:"candidateId"`
-	LastLogIndex uint64 `json:"lastLogIndex"`
-	LastLogTerm  uint64 `json:"lastLogTerm"`
+	Term              uint64 `json:"term"`
+	CandidateID       string `json:"candidate_id"`
+	LastLogEntryIndex uint64 `json:"last_log_entry_index"`
+	LastLogEntryTerm  uint64 `json:"last_log_entry_term"`
 }
 
 type PreVoteResponse struct {
 	Term        uint64 `json:"term"`
-	VoteGranted bool   `json:"voteGranted"`
+	VoteGranted bool   `json:"vote_granted"`
 }
 
 type RequestVoteRequest struct {
-	Term         uint64 `json:"term"`
-	CandidateID  string `json:"candidateId"`
-	LastLogIndex uint64 `json:"lastLogIndex"`
-	LastLogTerm  uint64 `json:"lastLogTerm"`
+	Term              uint64 `json:"term"`
+	CandidateID       string `json:"candidate_id"`
+	LastLogEntryIndex uint64 `json:"last_log_entry_index"`
+	LastLogEntryTerm  uint64 `json:"last_log_entry_term"`
 }
 
 type RequestVoteResponse struct {
 	Term        uint64 `json:"term"`
-	VoteGranted bool   `json:"voteGranted"`
+	VoteGranted bool   `json:"vote_granted"`
 }
 
 func NewTransport() *Transport {
@@ -93,12 +93,12 @@ func (t *Transport) AppendEntries(
 	leaderCommitIndex uint64,
 ) (uint64, bool, uint64, uint64) {
 	appendEntriesRequest := AppendEntriesRequest{
-		Term:         term,
-		LeaderId:     leaderId,
-		PrevLogIndex: prevLogEntryIndex,
-		PrevLogTerm:  prevLogEntryTerm,
-		Entries:      logEntries,
-		LeaderCommit: leaderCommitIndex,
+		Term:              term,
+		LeaderId:          leaderId,
+		PrevLogEntryIndex: prevLogEntryIndex,
+		PrevLogEntryTerm:  prevLogEntryTerm,
+		LogEntries:        logEntries,
+		LeaderCommitIndex: leaderCommitIndex,
 	}
 
 	data, err := json.Marshal(appendEntriesRequest)
@@ -216,10 +216,10 @@ func (t *Transport) PreVote(
 	lastLogEntryTerm uint64,
 ) (uint64, bool) {
 	preVoteRequest := PreVoteRequest{
-		Term:         term,
-		CandidateID:  candidateId,
-		LastLogIndex: lastLogEntryIndex,
-		LastLogTerm:  lastLogEntryTerm,
+		Term:              term,
+		CandidateID:       candidateId,
+		LastLogEntryIndex: lastLogEntryIndex,
+		LastLogEntryTerm:  lastLogEntryTerm,
 	}
 
 	data, err := json.Marshal(preVoteRequest)
@@ -283,10 +283,10 @@ func (t *Transport) RequestVote(
 	lastLogEntryTerm uint64,
 ) (uint64, bool) {
 	requestVoteRequest := RequestVoteRequest{
-		Term:         term,
-		CandidateID:  candidateId,
-		LastLogIndex: lastLogEntryIndex,
-		LastLogTerm:  lastLogEntryTerm,
+		Term:              term,
+		CandidateID:       candidateId,
+		LastLogEntryIndex: lastLogEntryIndex,
+		LastLogEntryTerm:  lastLogEntryTerm,
 	}
 
 	data, err := json.Marshal(requestVoteRequest)

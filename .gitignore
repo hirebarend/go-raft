@@ -31,8 +31,5 @@ go.work.sum
 # .idea/
 # .vscode/
 
-raft-go
-
-data/
-
-*.md
+*.data
+*.seg

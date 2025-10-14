@@ -56,7 +56,7 @@ func (f *FollowerRole) HandleAppendEntries(
 	prevLogEntryIndex uint64,
 	prevLogEntryTerm uint64,
 	logEntries []LogEntry,
-	leaderCommit uint64,
+	leaderCommitIndex uint64,
 ) (uint64, bool, uint64, uint64) {
 	currentTerm := f.raft.store.GetCurrentTerm()
 
@@ -67,7 +67,7 @@ func (f *FollowerRole) HandleAppendEntries(
 	if term > currentTerm {
 		followerRole := f.raft.becomeFollower(term)
 
-		return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
+		return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
 	}
 
 	f.resetElectionTimer()
@@ -88,7 +88,7 @@ func (f *FollowerRole) HandleAppendEntries(
 
 	f.appendEntries(prevLogEntryIndex, logEntries)
 
-	f.raft.setCommitIndex(leaderCommit)
+	f.raft.setCommitIndex(leaderCommitIndex)
 
 	f.applyToFiniteStateMachine()
 
