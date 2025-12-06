@@ -11,12 +11,9 @@ type FollowerRole struct {
 }
 
 func NewFollowerRole(raft *Raft) *FollowerRole {
-	electionTimeoutMin := 4 * 3
-	electionTimeoutMax := 4 * 5
-
 	return &FollowerRole{
 		raft:             raft,
-		electionDeadline: electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1),
+		electionDeadline: raft.electionTimeoutMin + raft.rng.IntN(raft.electionTimeoutMax-raft.electionTimeoutMin+1),
 		electionTicks:    0,
 	}
 }
@@ -65,9 +62,7 @@ func (f *FollowerRole) HandleAppendEntries(
 	}
 
 	if term > currentTerm {
-		followerRole := f.raft.becomeFollower(term)
-
-		return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
+		return f.raft.becomeFollower(term).HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
 	}
 
 	f.resetElectionTimer()
@@ -117,9 +112,7 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 	}
 
 	if term > currentTerm {
-		followerRole := f.raft.becomeFollower(term)
-
-		return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
+		return f.raft.becomeFollower(term).HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 	}
 
 	f.resetElectionTimer()
@@ -142,37 +135,26 @@ func (f *FollowerRole) HandlePropose(ctx context.Context, data []byte) (any, err
 }
 
 func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogEntry) {
+	if len(logEntries) == 0 {
+		return
+	}
+
 	for i, entry := range logEntries {
 		idx := prevLogEntryIndex + 1 + uint64(i)
 
 		logEntryAtIdx, err := f.raft.log.ReadDeserialize(idx)
-
-		if err == nil {
-			if logEntryAtIdx.Term != entry.Term {
-				err := f.raft.log.TruncateFrom(idx)
-
-				if err == nil {
-					for _, logEntry := range logEntries[i:] {
-						_, err := f.raft.log.SerializeWrite(&logEntry)
-
-						if err != nil {
-							break
-						}
-					}
-
-					f.raft.log.Commit()
-				}
-
-				return
-			}
-
+		if err == nil && logEntryAtIdx.Term == entry.Term {
 			continue
 		}
 
-		for _, logEntry := range logEntries[i:] {
-			_, err := f.raft.log.SerializeWrite(&logEntry)
+		if err == nil && logEntryAtIdx.Term != entry.Term {
+			if err := f.raft.log.TruncateFrom(idx); err != nil {
+				return
+			}
+		}
 
-			if err != nil {
+		for _, logEntry := range logEntries[i:] {
+			if _, err := f.raft.log.SerializeWrite(&logEntry); err != nil {
 				break
 			}
 		}
@@ -238,9 +220,6 @@ func (f *FollowerRole) checkLogConsistency(index, term uint64) (bool, uint64, ui
 }
 
 func (f *FollowerRole) resetElectionTimer() {
-	electionTimeoutMin := 4 * 3
-	electionTimeoutMax := 4 * 5
-
-	f.electionDeadline = electionTimeoutMin + f.raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1)
+	f.electionDeadline = f.raft.electionTimeoutMin + f.raft.rng.IntN(f.raft.electionTimeoutMax-f.raft.electionTimeoutMin+1)
 	f.electionTicks = 0
 }

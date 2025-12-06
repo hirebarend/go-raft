@@ -22,7 +22,7 @@ func NewLeaderRole(raft *Raft) *LeaderRole {
 		raft:              raft,
 		applierCh:         make(chan struct{}, 1),
 		applierStopCh:     make(chan struct{}),
-		heartbeatDeadline: 4,
+		heartbeatDeadline: raft.heartbeatTimeout,
 		heartbeatTicks:    0,
 		inflight:          make(map[string]bool),
 		matchIndex:        make(map[string]uint64),
@@ -57,34 +57,19 @@ func (l *LeaderRole) OnEnter(term uint64) {
 		l.nextIndex[p] = lastLogEntryIndex + 1
 	}
 
-	l.matchIndex[l.raft.id] = lastLogEntryIndex + 1
-	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
-
 	logEntry := LogEntry{
 		Data: nil,
 		Term: term,
 	}
 
-	_, err := l.raft.log.SerializeWrite(&logEntry)
-
+	newLastLogEntryIndex, err := l.raft.log.SerializeWriteCommit(&logEntry)
 	if err != nil {
 		l.raft.becomeFollower(term)
-
 		return
 	}
 
-	l.raft.log.Commit()
-
-	lastLogEntryIndex, err = l.raft.log.GetLastIndex()
-
-	if err != nil {
-		l.raft.becomeFollower(term)
-
-		return
-	}
-
-	l.matchIndex[l.raft.id] = lastLogEntryIndex
-	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
+	l.matchIndex[l.raft.id] = newLastLogEntryIndex
+	l.nextIndex[l.raft.id] = newLastLogEntryIndex + 1
 
 	l.sendAppendEntriesToAllNodes()
 
@@ -119,13 +104,7 @@ func (l *LeaderRole) HandleAppendEntries(
 		return currentTerm, false, 0, 0
 	}
 
-	if term == currentTerm && leaderId == l.raft.id {
-		return currentTerm, false, 0, 0
-	}
-
-	followerRole := l.raft.becomeFollower(term)
-
-	return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
+	return l.raft.becomeFollower(term).HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommit)
 }
 
 func (l *LeaderRole) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {
@@ -141,9 +120,7 @@ func (l *LeaderRole) HandleRequestVote(term uint64, candidateId string, lastLogE
 		return currentTerm, false
 	}
 
-	followerRole := l.raft.becomeFollower(term)
-
-	return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
+	return l.raft.becomeFollower(term).HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 }
 
 func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error) {
@@ -183,18 +160,14 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 		return res, nil
 	case <-ctx.Done():
 		l.raft.mu.Lock()
-		ws := l.pending[index]
-		if len(ws) > 0 {
-			for i := range ws {
-				if ws[i] == ch {
-					ws[i] = ws[len(ws)-1]
-					ws = ws[:len(ws)-1]
+		if waiters, ok := l.pending[index]; ok {
+			for i, waiter := range waiters {
+				if waiter == ch {
+					l.pending[index] = append(waiters[:i], waiters[i+1:]...)
 					break
 				}
 			}
-			if len(ws) > 0 {
-				l.pending[index] = ws
-			} else {
+			if len(l.pending[index]) == 0 {
 				delete(l.pending, index)
 			}
 		}
