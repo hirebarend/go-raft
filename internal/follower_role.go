@@ -11,9 +11,6 @@ type FollowerRole struct {
 }
 
 func NewFollowerRole(raft *Raft) *FollowerRole {
-	electionTimeoutMin := 4 * 3
-	electionTimeoutMax := 4 * 5
-
 	return &FollowerRole{
 		raft:             raft,
 		electionDeadline: electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1),
@@ -60,36 +57,37 @@ func (f *FollowerRole) HandleAppendEntries(
 ) (uint64, bool, uint64, uint64) {
 	currentTerm := f.raft.store.GetCurrentTerm()
 
+	// If the term of the leader is less than the current term, reject the request.
 	if term < currentTerm {
 		return currentTerm, false, 0, 0
 	}
 
+	// If the term of the leader is greater than the current term, become a follower and process the request.
 	if term > currentTerm {
 		followerRole := f.raft.becomeFollower(term)
-
 		return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
 	}
 
 	f.resetElectionTimer()
 
+	// Check if the log is consistent.
 	lastLogEntryIndex, _ := f.raft.log.GetLastIndex()
-
 	if prevLogEntryIndex > lastLogEntryIndex {
 		return currentTerm, false, lastLogEntryIndex + 1, 0
 	}
 
 	ok, conflictIndex, conflictTerm := f.checkLogConsistency(prevLogEntryIndex, prevLogEntryTerm)
-
 	if !ok {
 		return currentTerm, false, conflictIndex, conflictTerm
 	}
 
 	f.raft.store.SetLeaderId(leaderId)
 
+	// Append the new log entries.
 	f.appendEntries(prevLogEntryIndex, logEntries)
 
+	// Update the commit index and apply the new entries to the state machine.
 	f.raft.setCommitIndex(leaderCommitIndex)
-
 	f.applyToFiniteStateMachine()
 
 	return currentTerm, true, 0, 0
@@ -142,45 +140,47 @@ func (f *FollowerRole) HandlePropose(ctx context.Context, data []byte) (any, err
 }
 
 func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogEntry) {
+	if len(logEntries) == 0 {
+		return
+	}
+
+	// Find the first index where the follower's log conflicts with the leader's.
+	// This will be the index in `logEntries` from where we need to start appending.
+	firstAppendIndex := -1
+
 	for i, entry := range logEntries {
 		idx := prevLogEntryIndex + 1 + uint64(i)
 
 		logEntryAtIdx, err := f.raft.log.ReadDeserialize(idx)
-
-		if err == nil {
-			if logEntryAtIdx.Term != entry.Term {
-				err := f.raft.log.TruncateFrom(idx)
-
-				if err == nil {
-					for _, logEntry := range logEntries[i:] {
-						_, err := f.raft.log.SerializeWrite(&logEntry)
-
-						if err != nil {
-							break
-						}
-					}
-
-					f.raft.log.Commit()
-				}
-
-				return
-			}
-
-			continue
+		if err != nil {
+			// The follower's log is shorter than the leader's. No conflict, just append.
+			firstAppendIndex = i
+			break
 		}
 
-		for _, logEntry := range logEntries[i:] {
-			_, err := f.raft.log.SerializeWrite(&logEntry)
-
-			if err != nil {
-				break
+		if logEntryAtIdx.Term != entry.Term {
+			// A conflict is found. Truncate the log from this index.
+			if err := f.raft.log.TruncateFrom(idx); err != nil {
+				return // Error during truncation, stop processing.
 			}
+			firstAppendIndex = i
+			break
 		}
+	}
 
-		f.raft.log.Commit()
-
+	// If all entries in `logEntries` match the follower's log, there's nothing to do.
+	if firstAppendIndex == -1 {
 		return
 	}
+
+	// Append the new entries from the determined index onwards.
+	for _, logEntry := range logEntries[firstAppendIndex:] {
+		if _, err := f.raft.log.SerializeWrite(&logEntry); err != nil {
+			break // Error during write, stop appending.
+		}
+	}
+
+	f.raft.log.Commit()
 }
 
 func (f *FollowerRole) applyToFiniteStateMachine() {
@@ -238,9 +238,6 @@ func (f *FollowerRole) checkLogConsistency(index, term uint64) (bool, uint64, ui
 }
 
 func (f *FollowerRole) resetElectionTimer() {
-	electionTimeoutMin := 4 * 3
-	electionTimeoutMax := 4 * 5
-
 	f.electionDeadline = electionTimeoutMin + f.raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1)
 	f.electionTicks = 0
 }

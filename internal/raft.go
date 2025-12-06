@@ -174,13 +174,11 @@ func (r *Raft) becomeCandidate() *CandidateRole {
 		r.role.OnExit()
 	}
 
-	role := NewCandidateRole(r)
-
-	r.role = role
-
+	candidateRole := NewCandidateRole(r)
+	r.role = candidateRole
 	r.role.OnEnter(0)
 
-	return role
+	return candidateRole
 }
 
 func (r *Raft) becomeFollower(term uint64) *FollowerRole {
@@ -190,13 +188,11 @@ func (r *Raft) becomeFollower(term uint64) *FollowerRole {
 		r.role.OnExit()
 	}
 
-	role := NewFollowerRole(r)
-
-	r.role = role
-
+	followerRole := NewFollowerRole(r)
+	r.role = followerRole
 	r.role.OnEnter(term)
 
-	return role
+	return followerRole
 }
 
 func (r *Raft) becomeLeader(term uint64) *LeaderRole {
@@ -206,13 +202,11 @@ func (r *Raft) becomeLeader(term uint64) *LeaderRole {
 		r.role.OnExit()
 	}
 
-	role := NewLeaderRole(r)
-
-	r.role = role
-
+	leaderRole := NewLeaderRole(r)
+	r.role = leaderRole
 	r.role.OnEnter(term)
 
-	return role
+	return leaderRole
 }
 
 func (r *Raft) setCommitIndex(commitIndex uint64) {
