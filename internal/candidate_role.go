@@ -16,12 +16,9 @@ type CandidateRole struct {
 }
 
 func NewCandidateRole(raft *Raft) *CandidateRole {
-	electionTimeoutMin := 4 * 3
-	electionTimeoutMax := 4 * 5
-
 	return &CandidateRole{
 		raft:             raft,
-		electionDeadline: electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1),
+		electionDeadline: raft.electionTimeoutMin + raft.rng.IntN(raft.electionTimeoutMax-raft.electionTimeoutMin+1),
 		electionTicks:    0,
 		majority:         len(raft.nodes)/2 + 1,
 		nodes:            append([]string(nil), raft.nodes...),
@@ -69,9 +66,7 @@ func (c *CandidateRole) HandleAppendEntries(
 		return currentTerm, false, 0, 0
 	}
 
-	followerRole := c.raft.becomeFollower(term)
-
-	return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
+	return c.raft.becomeFollower(term).HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
 }
 
 func (c *CandidateRole) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {
@@ -95,9 +90,7 @@ func (c *CandidateRole) HandleRequestVote(term uint64, candidateId string, lastL
 		return currentTerm, false
 	}
 
-	followerRole := c.raft.becomeFollower(term)
-
-	return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
+	return c.raft.becomeFollower(term).HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 }
 
 func (c *CandidateRole) HandlePropose(ctx context.Context, data []byte) (any, error) {

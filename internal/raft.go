@@ -37,32 +37,38 @@ type RaftRole interface {
 }
 
 type Raft struct {
-	enabled   bool
-	fsm       *FSM
-	id        string
-	log       *golog.Log[LogEntry]
-	mu        *sync.Mutex
-	nodes     []string
-	rng       *rand.Rand
-	role      RaftRole
-	store     *Store
-	transport *Transport
+	enabled            bool
+	fsm                *FSM
+	id                 string
+	log                *golog.Log[LogEntry]
+	mu                 *sync.Mutex
+	nodes              []string
+	rng                *rand.Rand
+	role               RaftRole
+	store              *Store
+	transport          *Transport
+	electionTimeoutMin int
+	electionTimeoutMax int
+	heartbeatTimeout   int
 }
 
 func NewRaft(id string, nodes []string, log *golog.Log[LogEntry], store *Store, transport *Transport, fsm *FSM) *Raft {
 	seed := uint64(time.Now().UnixNano())
 
 	raft := Raft{
-		enabled:   true,
-		fsm:       fsm,
-		id:        id,
-		log:       log,
-		mu:        &sync.Mutex{},
-		nodes:     nodes,
-		rng:       rand.New(rand.NewPCG(seed, seed>>1)),
-		role:      nil,
-		store:     store,
-		transport: transport,
+		enabled:            true,
+		fsm:                fsm,
+		id:                 id,
+		log:                log,
+		mu:                 &sync.Mutex{},
+		nodes:              nodes,
+		rng:                rand.New(rand.NewPCG(seed, seed>>1)),
+		role:               nil,
+		store:              store,
+		transport:          transport,
+		electionTimeoutMin: 12,
+		electionTimeoutMax: 20,
+		heartbeatTimeout:   4,
 	}
 
 	raft.becomeFollower(0)
@@ -217,7 +223,6 @@ func (r *Raft) becomeLeader(term uint64) *LeaderRole {
 
 func (r *Raft) setCommitIndex(commitIndex uint64) {
 	lastLogEntryIndex, err := r.log.GetLastIndex()
-
 	if err != nil || lastLogEntryIndex == 0 {
 		return
 	}
@@ -226,14 +231,10 @@ func (r *Raft) setCommitIndex(commitIndex uint64) {
 		commitIndex = lastLogEntryIndex
 	}
 
-	for {
-		current := r.store.commitIndex.Load()
-
-		if commitIndex <= current {
-			return
-		}
-		if r.store.commitIndex.CompareAndSwap(current, commitIndex) {
-			return // success
-		}
+	current := r.store.commitIndex.Load()
+	if commitIndex <= current {
+		return
 	}
+
+	r.store.commitIndex.Store(commitIndex)
 }
