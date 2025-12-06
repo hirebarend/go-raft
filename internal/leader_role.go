@@ -22,7 +22,7 @@ func NewLeaderRole(raft *Raft) *LeaderRole {
 		raft:              raft,
 		applierCh:         make(chan struct{}, 1),
 		applierStopCh:     make(chan struct{}),
-		heartbeatDeadline: 4,
+		heartbeatDeadline: heartbeatInterval,
 		heartbeatTicks:    0,
 		inflight:          make(map[string]bool),
 		matchIndex:        make(map[string]uint64),
@@ -37,55 +37,45 @@ func (l *LeaderRole) GetType() string {
 
 func (l *LeaderRole) OnEnter(term uint64) {
 	currentTerm := l.raft.store.GetCurrentTerm()
-
 	if currentTerm != term {
 		l.raft.becomeFollower(term)
-
 		return
 	}
 
 	l.raft.store.SetLeaderId(l.raft.id)
 
+	// Initialize the nextIndex for each follower to the leader's last log index + 1.
 	lastLogEntryIndex, _ := l.raft.log.GetLastIndex()
-
 	for _, p := range l.raft.nodes {
 		if p == l.raft.id {
+			l.matchIndex[p] = lastLogEntryIndex
+			l.nextIndex[p] = lastLogEntryIndex + 1
 			continue
 		}
-
 		l.matchIndex[p] = 0
 		l.nextIndex[p] = lastLogEntryIndex + 1
 	}
 
-	l.matchIndex[l.raft.id] = lastLogEntryIndex + 1
-	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
-
+	// Append a no-op entry to the log to commit any previous entries.
 	logEntry := LogEntry{
 		Data: nil,
 		Term: term,
 	}
-
-	_, err := l.raft.log.SerializeWrite(&logEntry)
-
-	if err != nil {
+	if _, err := l.raft.log.SerializeWriteCommit(&logEntry); err != nil {
 		l.raft.becomeFollower(term)
-
 		return
 	}
 
-	l.raft.log.Commit()
-
-	lastLogEntryIndex, err = l.raft.log.GetLastIndex()
-
+	lastLogEntryIndex, err := l.raft.log.GetLastIndex()
 	if err != nil {
 		l.raft.becomeFollower(term)
-
 		return
 	}
 
 	l.matchIndex[l.raft.id] = lastLogEntryIndex
 	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
 
+	// Send initial empty AppendEntries RPCs (heartbeat) to each follower.
 	l.sendAppendEntriesToAllNodes()
 
 	l.tryToAdvanceCommitIndex()
@@ -327,7 +317,6 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 	l.resetHeartbeatTimer()
 
 	currentTerm := l.raft.store.GetCurrentTerm()
-
 	lastLogEntryIndex, _ := l.raft.log.GetLastIndex()
 
 	for _, node := range l.raft.nodes {
@@ -335,38 +324,39 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 			continue
 		}
 
+		// Don't send if an RPC is already in flight.
 		if l.inflight[node] {
+			continue
+		}
+
+		// If the follower is up-to-date, only send a heartbeat if the heartbeat timer has expired.
+		if l.nextIndex[node] > lastLogEntryIndex && l.heartbeatTicks < l.heartbeatDeadline {
 			continue
 		}
 
 		l.inflight[node] = true
 
 		next := l.nextIndex[node]
-
-		if l.nextIndex[node] == 0 {
+		if next == 0 {
 			next = lastLogEntryIndex + 1
 		}
 
 		var prevLogEntryIndex uint64
-
 		if next > 0 {
 			prevLogEntryIndex = next - 1
 		}
 
 		var prevLogEntryTerm uint64
-
 		if prevLogEntryIndex > 0 {
 			logEntry, err := l.raft.log.ReadDeserialize(prevLogEntryIndex)
-
 			if err == nil {
 				prevLogEntryTerm = logEntry.Term
 			}
 		}
 
 		var logEntries []LogEntry
-
 		if next <= lastLogEntryIndex {
-			const maxBatch = 2 * 1024
+			const maxBatch = 1024 * 2 // 2KB
 			to := lastLogEntryIndex
 			count := to - next + 1
 
@@ -375,10 +365,8 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 			}
 
 			logEntries = make([]LogEntry, 0, to-next+1)
-
 			for i := next; i <= to; i++ {
 				logEntry, err := l.raft.log.ReadDeserialize(i)
-
 				if err == nil {
 					logEntries = append(logEntries, *logEntry)
 				} else {

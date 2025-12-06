@@ -16,9 +16,6 @@ type CandidateRole struct {
 }
 
 func NewCandidateRole(raft *Raft) *CandidateRole {
-	electionTimeoutMin := 4 * 3
-	electionTimeoutMax := 4 * 5
-
 	return &CandidateRole{
 		raft:             raft,
 		electionDeadline: electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1),
@@ -91,12 +88,13 @@ func (c *CandidateRole) HandlePreVote(term uint64, candidateId string, lastLogEn
 func (c *CandidateRole) HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool) {
 	currentTerm := c.raft.store.GetCurrentTerm()
 
+	// If the term of the candidate is less than or equal to the current term, reject the request.
 	if term <= currentTerm {
 		return currentTerm, false
 	}
 
+	// If the term of the candidate is greater than the current term, become a follower and process the request.
 	followerRole := c.raft.becomeFollower(term)
-
 	return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 }
 
@@ -149,6 +147,11 @@ func (c *CandidateRole) sendPreVote(node string, term uint64, candidateId string
 	c.raft.mu.Lock()
 	defer c.raft.mu.Unlock()
 
+	// If the term has changed, we are no longer in the same election.
+	if c.raft.store.GetCurrentTerm() != term {
+		return
+	}
+
 	currentTerm := c.raft.store.GetCurrentTerm()
 
 	if t > currentTerm {
@@ -179,6 +182,11 @@ func (c *CandidateRole) sendRequestVote(node string, term uint64, candidateId st
 
 	c.raft.mu.Lock()
 	defer c.raft.mu.Unlock()
+
+	// If the term has changed, we are no longer in the same election.
+	if c.raft.store.GetCurrentTerm() != term {
+		return
+	}
 
 	currentTerm := c.raft.store.GetCurrentTerm()
 
