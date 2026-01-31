@@ -235,7 +235,7 @@ func (l *LeaderRole) triggerApplier() {
 
 func (l *LeaderRole) applyToFiniteStateMachine() {
 	commitIndex := l.raft.store.commitIndex.Load()
-	lastApplied := l.raft.store.lastApplied
+	lastApplied := l.raft.store.lastApplied.Load()
 
 	if commitIndex <= lastApplied {
 		return
@@ -271,7 +271,7 @@ func (l *LeaderRole) applyToFiniteStateMachine() {
 			close(ch)
 		}
 
-		l.raft.store.lastApplied = idx
+		l.raft.store.lastApplied.Store(idx)
 	}
 }
 

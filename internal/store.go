@@ -16,7 +16,7 @@ type Store struct {
 
 	currentTerm uint64
 
-	lastApplied uint64
+	lastApplied atomic.Uint64
 
 	leaderId string
 
@@ -27,18 +27,21 @@ type Store struct {
 	votedFor string
 }
 
-func NewStore(name string) *Store {
+func NewStore(name string) (*Store, error) {
 	store := &Store{
 		currentTerm: 0,
-		lastApplied: 0,
 		leaderId:    "",
 		name:        name,
 		votedFor:    "",
 	}
 
-	store.read()
+	err := store.read()
 
-	return store
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to read persistent state: %w", err)
+	}
+
+	return store, nil
 }
 
 func (s *Store) GetCurrentTerm() uint64 {
@@ -71,21 +74,45 @@ func (s *Store) SetCurrentTerm(v uint64) uint64 {
 }
 
 func (s *Store) GetLeaderId() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	return s.leaderId
 }
 
 func (s *Store) SetLeaderId(leaderId string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.leaderId = leaderId
 
 	return s.leaderId
 }
 
 func (s *Store) GetVotedFor() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	return s.votedFor
 }
 
 func (s *Store) SetVotedFor(votedFor string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.votedFor = votedFor
+
+	s.write()
+}
+
+func (s *Store) SetCurrentTermAndVotedFor(term uint64, votedFor string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.currentTerm = term
+	s.votedFor = votedFor
+
+	s.write()
 }
 
 func (s *Store) read() error {

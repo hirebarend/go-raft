@@ -39,7 +39,12 @@ func main() {
 		panic(err)
 	}
 
-	store := internal.NewStore(filepath.Join(*data, "store.data"))
+	store, err := internal.NewStore(filepath.Join(*data, "store.data"))
+
+	if err != nil {
+		panic(err)
+	}
+
 	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), log, store, internal.NewTransport(), internal.NewFSM())
 
 	r := gin.Default()

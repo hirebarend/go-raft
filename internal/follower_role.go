@@ -29,9 +29,7 @@ func (f *FollowerRole) OnEnter(term uint64) {
 	currentTerm := f.raft.store.GetCurrentTerm()
 
 	if term > currentTerm {
-		f.raft.store.SetCurrentTerm(term)
-
-		f.raft.store.SetVotedFor("")
+		f.raft.store.SetCurrentTermAndVotedFor(term, "")
 	}
 
 	f.raft.store.SetLeaderId("")
@@ -152,15 +150,9 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 				err := f.raft.log.TruncateFrom(idx)
 
 				if err == nil {
-					for _, logEntry := range logEntries[i:] {
-						_, err := f.raft.log.SerializeWrite(&logEntry)
-
-						if err != nil {
-							break
-						}
+					if f.writeEntries(logEntries[i:]) {
+						f.raft.log.Commit()
 					}
-
-					f.raft.log.Commit()
 				}
 
 				return
@@ -169,23 +161,29 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 			continue
 		}
 
-		for _, logEntry := range logEntries[i:] {
-			_, err := f.raft.log.SerializeWrite(&logEntry)
-
-			if err != nil {
-				break
-			}
+		if f.writeEntries(logEntries[i:]) {
+			f.raft.log.Commit()
 		}
-
-		f.raft.log.Commit()
 
 		return
 	}
 }
 
+func (f *FollowerRole) writeEntries(entries []LogEntry) bool {
+	for _, logEntry := range entries {
+		_, err := f.raft.log.SerializeWrite(&logEntry)
+
+		if err != nil {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (f *FollowerRole) applyToFiniteStateMachine() {
 	commitIndex := f.raft.store.commitIndex.Load()
-	lastApplied := f.raft.store.lastApplied
+	lastApplied := f.raft.store.lastApplied.Load()
 
 	if commitIndex <= lastApplied {
 		return
@@ -202,7 +200,7 @@ func (f *FollowerRole) applyToFiniteStateMachine() {
 			f.raft.fsm.Apply(logEntry.Data)
 		}
 
-		f.raft.store.lastApplied = idx
+		f.raft.store.lastApplied.Store(idx)
 	}
 }
 
