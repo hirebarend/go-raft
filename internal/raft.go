@@ -46,7 +46,7 @@ type Raft struct {
 	enabled       bool
 	fsm           *FSM
 	id            string
-	log           *golog.Log[LogEntry]
+	log           *golog.Log
 	mu            *sync.Mutex
 	nodes         []string
 	rng           *rand.Rand
@@ -57,7 +57,7 @@ type Raft struct {
 	transport     *Transport
 }
 
-func NewRaft(id string, dataDir string, nodes []string, log *golog.Log[LogEntry], store *Store, transport *Transport, fsm *FSM) *Raft {
+func NewRaft(id string, dataDir string, nodes []string, log *golog.Log, store *Store, transport *Transport, fsm *FSM) *Raft {
 	seed := uint64(time.Now().UnixNano())
 
 	raft := Raft{
@@ -103,7 +103,13 @@ func NewRaft(id string, dataDir string, nodes []string, log *golog.Log[LogEntry]
 	lastApplied := raft.store.lastApplied.Load()
 
 	for idx := lastApplied + 1; idx <= lastLogEntryIndex; idx++ {
-		logEntry, err := log.ReadDeserialize(idx)
+		data, err := log.Read(idx)
+
+		if err != nil {
+			break
+		}
+
+		logEntry, err := DeserializeLogEntry(data)
 
 		if err != nil {
 			break
@@ -238,7 +244,13 @@ func (r *Raft) TakeSnapshot() error {
 	if lastApplied == r.snapshotIndex {
 		snapshotTerm = r.snapshotTerm
 	} else {
-		logEntry, err := r.log.ReadDeserialize(lastApplied)
+		raw, err := r.log.Read(lastApplied)
+
+		if err != nil {
+			return err
+		}
+
+		logEntry, err := DeserializeLogEntry(raw)
 
 		if err != nil {
 			return err
