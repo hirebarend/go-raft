@@ -121,7 +121,9 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 		return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 	}
 
-	if f.raft.store.GetVotedFor() != "" && f.raft.store.GetVotedFor() != candidateId {
+	votedFor := f.raft.store.GetVotedFor()
+
+	if votedFor != "" && votedFor != candidateId {
 		return currentTerm, false
 	}
 

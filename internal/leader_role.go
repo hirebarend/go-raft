@@ -7,6 +7,8 @@ import (
 	"sort"
 )
 
+const maxBatch = 2 * 1024
+
 type LeaderRole struct {
 	raft              *Raft
 	applierCh         chan struct{}
@@ -402,7 +404,6 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 		var logEntries []LogEntry
 
 		if next <= lastLogEntryIndex {
-			const maxBatch = 2 * 1024
 			to := lastLogEntryIndex
 			count := to - next + 1
 
@@ -544,7 +545,6 @@ func (l *LeaderRole) retrySendAppendEntriesToNode(node string, term uint64) {
 	var logEntries []LogEntry
 
 	if next <= lastLogEntryIndex {
-		const maxBatch = 2 * 1024
 		to := lastLogEntryIndex
 		count := to - next + 1
 

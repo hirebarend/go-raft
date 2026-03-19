@@ -15,6 +15,8 @@ type Snapshot struct {
 	Data              []byte
 }
 
+const maxSnapshotSize = 256 << 20 // 256 MiB
+
 func SaveSnapshot(name string, snapshot *Snapshot) error {
 	if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil && !errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("mkdir: %w", err)
@@ -103,7 +105,7 @@ func LoadSnapshot(name string) (*Snapshot, error) {
 		return nil, fmt.Errorf("read data len: %w", err)
 	}
 
-	if n > 256<<20 {
+	if n > maxSnapshotSize {
 		return nil, fmt.Errorf("snapshot data too large: %d", n)
 	}
 
