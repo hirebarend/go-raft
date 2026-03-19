@@ -45,7 +45,7 @@ func main() {
 		panic(err)
 	}
 
-	raft := internal.NewRaft(addr, strings.Split(*nodes, ","), log, store, internal.NewTransport(), internal.NewFSM())
+	raft := internal.NewRaft(addr, *data, strings.Split(*nodes, ","), log, store, internal.NewTransport(), internal.NewFSM())
 
 	r := gin.Default()
 
@@ -129,6 +129,26 @@ func main() {
 		})
 	})
 
+	r.POST("/rpc/install-snapshot", func(c *gin.Context) {
+		var request internal.InstallSnapshotRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
+			return
+		}
+
+		term := raft.HandleInstallSnapshot(
+			request.Term,
+			request.LeaderId,
+			request.LastIncludedIndex,
+			request.LastIncludedTerm,
+			request.Data,
+		)
+
+		c.JSON(http.StatusOK, internal.InstallSnapshotResponse{
+			Term: term,
+		})
+	})
+
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})
 	})
@@ -159,6 +179,16 @@ func main() {
 		})
 	})
 
+	r.POST("/snapshot", func(c *gin.Context) {
+		if err := raft.TakeSnapshot(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "snapshot taken"})
+	})
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -176,6 +206,20 @@ func main() {
 			select {
 			case <-ticker.C:
 				raft.Tick()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				raft.TakeSnapshot()
 			case <-ctx.Done():
 				return
 			}

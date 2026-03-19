@@ -25,3 +25,11 @@ func (fsm *FSM) Apply(data []byte) any {
 
 	return true
 }
+
+func (fsm *FSM) Snapshot() ([]byte, error) {
+	return fsm.counter.Snapshot()
+}
+
+func (fsm *FSM) Restore(data []byte) error {
+	return fsm.counter.Restore(data)
+}

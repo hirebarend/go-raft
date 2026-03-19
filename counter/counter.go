@@ -1,7 +1,9 @@
 package counter
 
 import (
-	"hash/maphash"
+	"bytes"
+	"encoding/gob"
+	"hash/fnv"
 	"sync"
 )
 
@@ -9,7 +11,6 @@ type Counter struct {
 	minute  int16
 	mu      sync.Mutex
 	present map[uint64]bool
-	seed    maphash.Seed
 	slots   []map[uint64]bool
 	value   int64
 }
@@ -26,7 +27,6 @@ func NewCounter() *Counter {
 	return &Counter{
 		minute:  -1,
 		present: make(map[uint64]bool),
-		seed:    maphash.MakeSeed(),
 		slots:   slots,
 		value:   0,
 	}
@@ -56,7 +56,7 @@ func (c *Counter) Increment(id string, n int64, m int16) bool {
 		c.minute = m
 	}
 
-	hash := maphash.String(c.seed, id)
+	hash := hashString(id)
 
 	if _, ok := c.present[hash]; ok {
 		return true
@@ -90,4 +90,56 @@ func (c *Counter) clearMinuteRange(from int16, to int16) {
 			break
 		}
 	}
+}
+
+func hashString(s string) uint64 {
+	h := fnv.New64a()
+	h.Write([]byte(s))
+
+	return h.Sum64()
+}
+
+type counterSnapshot struct {
+	Minute  int16
+	Present map[uint64]bool
+	Slots   []map[uint64]bool
+	Value   int64
+}
+
+func (c *Counter) Snapshot() ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	state := counterSnapshot{
+		Minute:  c.minute,
+		Present: c.present,
+		Slots:   c.slots,
+		Value:   c.value,
+	}
+
+	var buf bytes.Buffer
+
+	if err := gob.NewEncoder(&buf).Encode(state); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func (c *Counter) Restore(data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var state counterSnapshot
+
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&state); err != nil {
+		return err
+	}
+
+	c.minute = state.Minute
+	c.present = state.Present
+	c.slots = state.Slots
+	c.value = state.Value
+
+	return nil
 }

@@ -55,6 +55,18 @@ type RequestVoteResponse struct {
 	VoteGranted bool   `json:"vote_granted"`
 }
 
+type InstallSnapshotRequest struct {
+	Term              uint64 `json:"term"`
+	LeaderId          string `json:"leader_id"`
+	LastIncludedIndex uint64 `json:"last_included_index"`
+	LastIncludedTerm  uint64 `json:"last_included_term"`
+	Data              []byte `json:"data"`
+}
+
+type InstallSnapshotResponse struct {
+	Term uint64 `json:"term"`
+}
+
 func NewTransport() *Transport {
 	tr := &http.Transport{
 		DialContext: (&net.Dialer{
@@ -340,4 +352,73 @@ func (t *Transport) RequestVote(
 	}
 
 	return requestVoteResponse.Term, requestVoteResponse.VoteGranted
+}
+
+func (t *Transport) InstallSnapshot(
+	node string,
+	term uint64,
+	leaderId string,
+	lastIncludedIndex uint64,
+	lastIncludedTerm uint64,
+	data []byte,
+) uint64 {
+	installSnapshotRequest := InstallSnapshotRequest{
+		Term:              term,
+		LeaderId:          leaderId,
+		LastIncludedIndex: lastIncludedIndex,
+		LastIncludedTerm:  lastIncludedTerm,
+		Data:              data,
+	}
+
+	body, err := json.Marshal(installSnapshotRequest)
+
+	if err != nil {
+		return term
+	}
+
+	url := fmt.Sprintf("http://%s/rpc/install-snapshot", node)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+
+	if err != nil {
+		return term
+	}
+
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := t.client.Do(request)
+
+	if err != nil {
+		return term
+	}
+
+	defer func() {
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}()
+
+	if response.StatusCode != http.StatusOK {
+		return term
+	}
+
+	const maxBody = 1 << 20
+
+	reader := io.LimitReader(response.Body, maxBody)
+
+	var installSnapshotResponse InstallSnapshotResponse
+
+	decoder := json.NewDecoder(reader)
+
+	if err := decoder.Decode(&installSnapshotResponse); err != nil {
+		return term
+	}
+
+	if decoder.More() {
+		return term
+	}
+
+	return installSnapshotResponse.Term
 }
