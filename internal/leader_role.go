@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"sort"
 )
 
@@ -57,7 +58,7 @@ func (l *LeaderRole) OnEnter(term uint64) {
 		l.nextIndex[p] = lastLogEntryIndex + 1
 	}
 
-	l.matchIndex[l.raft.id] = lastLogEntryIndex + 1
+	l.matchIndex[l.raft.id] = lastLogEntryIndex
 	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
 
 	logEntry := LogEntry{
@@ -95,6 +96,14 @@ func (l *LeaderRole) OnEnter(term uint64) {
 
 func (l *LeaderRole) OnExit() {
 	l.stopApplier()
+
+	for idx, waiters := range l.pending {
+		for _, ch := range waiters {
+			close(ch)
+		}
+
+		delete(l.pending, idx)
+	}
 }
 
 func (l *LeaderRole) Tick() {
@@ -179,7 +188,11 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 	l.raft.mu.Unlock()
 
 	select {
-	case res := <-ch:
+	case res, ok := <-ch:
+		if !ok {
+			return nil, errors.New("leader stepped down")
+		}
+
 		return res, nil
 	case <-ctx.Done():
 		l.raft.mu.Lock()
@@ -411,6 +424,8 @@ func (l *LeaderRole) sendAppendEntriesToNode(node string, term uint64, leaderId 
 		return
 	}
 
+	needsRetry := false
+
 	if success {
 		lastSent := prevLogEntryIndex
 
@@ -429,6 +444,12 @@ func (l *LeaderRole) sendAppendEntriesToNode(node string, term uint64, leaderId 
 		}
 
 		l.tryToAdvanceCommitIndex()
+
+		lastLogEntryIndex, _ := l.raft.log.GetLastIndex()
+
+		if l.nextIndex[node] <= lastLogEntryIndex {
+			needsRetry = true
+		}
 	} else {
 		if l.nextIndex[node] > 1 {
 			if conflictTerm != 0 {
@@ -446,6 +467,70 @@ func (l *LeaderRole) sendAppendEntriesToNode(node string, term uint64, leaderId 
 			if l.nextIndex[node] < 1 {
 				l.nextIndex[node] = 1
 			}
+
+			needsRetry = true
 		}
 	}
+
+	if needsRetry {
+		l.retrySendAppendEntriesToNode(node, term)
+	}
+}
+
+func (l *LeaderRole) retrySendAppendEntriesToNode(node string, term uint64) {
+	if l.inflight[node] {
+		return
+	}
+
+	l.inflight[node] = true
+
+	lastLogEntryIndex, _ := l.raft.log.GetLastIndex()
+
+	next := l.nextIndex[node]
+
+	if next == 0 {
+		next = lastLogEntryIndex + 1
+	}
+
+	var prevLogEntryIndex uint64
+
+	if next > 0 {
+		prevLogEntryIndex = next - 1
+	}
+
+	var prevLogEntryTerm uint64
+
+	if prevLogEntryIndex > 0 {
+		logEntry, err := l.raft.log.ReadDeserialize(prevLogEntryIndex)
+
+		if err == nil {
+			prevLogEntryTerm = logEntry.Term
+		}
+	}
+
+	var logEntries []LogEntry
+
+	if next <= lastLogEntryIndex {
+		const maxBatch = 2 * 1024
+		to := lastLogEntryIndex
+		count := to - next + 1
+
+		if count > maxBatch {
+			to = next + maxBatch - 1
+		}
+
+		logEntries = make([]LogEntry, 0, to-next+1)
+
+		for i := next; i <= to; i++ {
+			logEntry, err := l.raft.log.ReadDeserialize(i)
+
+			if err == nil {
+				logEntries = append(logEntries, *logEntry)
+			} else {
+				break
+			}
+		}
+	}
+
+	go l.sendAppendEntriesToNode(node, term, l.raft.GetLeaderId(), prevLogEntryIndex, prevLogEntryTerm, logEntries, l.raft.store.commitIndex.Load())
 }

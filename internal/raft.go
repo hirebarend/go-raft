@@ -80,11 +80,7 @@ func (r *Raft) Disable() {
 
 	r.enabled = false
 
-	if leaderRole, ok := r.role.(*LeaderRole); ok {
-		leaderRole.OnExit()
-
-		r.role = nil
-	}
+	r.role.OnExit()
 
 	r.store.SetLeaderId("")
 }
@@ -160,11 +156,18 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIn
 }
 
 func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
+	r.mu.Lock()
+
 	if !r.enabled {
+		r.mu.Unlock()
+
 		return nil, errors.New("disabled (hard off)")
 	}
 
-	return r.role.HandlePropose(ctx, data)
+	role := r.role
+	r.mu.Unlock()
+
+	return role.HandlePropose(ctx, data)
 }
 
 func (r *Raft) becomeCandidate() *CandidateRole {

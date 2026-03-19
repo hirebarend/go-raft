@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 )
 
 type FollowerRole struct {
@@ -120,8 +121,6 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 		return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 	}
 
-	f.resetElectionTimer()
-
 	if f.raft.store.GetVotedFor() != "" && f.raft.store.GetVotedFor() != candidateId {
 		return currentTerm, false
 	}
@@ -132,11 +131,19 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 
 	f.raft.store.SetVotedFor(candidateId)
 
+	f.resetElectionTimer()
+
 	return currentTerm, true
 }
 
 func (f *FollowerRole) HandlePropose(ctx context.Context, data []byte) (any, error) {
-	return f.raft.transport.Propose(f.raft.GetLeaderId(), data)
+	leaderId := f.raft.GetLeaderId()
+
+	if leaderId == "" {
+		return nil, errors.New("no known leader")
+	}
+
+	return f.raft.transport.Propose(leaderId, data)
 }
 
 func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogEntry) {

@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 )
 
 type CandidateRole struct {
@@ -101,13 +102,27 @@ func (c *CandidateRole) HandleRequestVote(term uint64, candidateId string, lastL
 }
 
 func (c *CandidateRole) HandlePropose(ctx context.Context, data []byte) (any, error) {
-	return c.raft.transport.Propose(c.raft.GetLeaderId(), data)
+	leaderId := c.raft.GetLeaderId()
+
+	if leaderId == "" {
+		return nil, errors.New("no known leader")
+	}
+
+	return c.raft.transport.Propose(leaderId, data)
 }
 
 func (c *CandidateRole) startPreElection() {
 	currentTerm := c.raft.store.GetCurrentTerm()
 
-	c.votes++
+	c.preVotes++
+
+	if c.preVotes >= c.majority {
+		c.preVote = false
+
+		c.startElection()
+
+		return
+	}
 
 	lastLogEntryIndex, lastLogEntryTerm := GetLastLogEntryIndexAndTerm(c.raft.log)
 
@@ -144,7 +159,7 @@ func (c *CandidateRole) startElection() {
 }
 
 func (c *CandidateRole) sendPreVote(node string, term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) {
-	t, granted := c.raft.transport.PreVote(node, term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
+	t, granted := c.raft.transport.PreVote(node, term+1, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 
 	c.raft.mu.Lock()
 	defer c.raft.mu.Unlock()
@@ -157,7 +172,7 @@ func (c *CandidateRole) sendPreVote(node string, term uint64, candidateId string
 		return
 	}
 
-	if !granted || t != term {
+	if !granted {
 		return
 	}
 
