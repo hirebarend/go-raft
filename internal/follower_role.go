@@ -178,9 +178,13 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 	for i, entry := range logEntries {
 		idx := prevLogEntryIndex + 1 + uint64(i)
 
-		logEntryAtIdx, err := f.raft.log.ReadDeserialize(idx)
+		raw, err := f.raft.log.Read(idx)
 
 		if err == nil {
+			logEntryAtIdx, err := DeserializeLogEntry(raw)
+			if err != nil {
+				return
+			}
 			if logEntryAtIdx.Term != entry.Term {
 				err := f.raft.log.TruncateFrom(idx)
 
@@ -206,7 +210,7 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 
 func (f *FollowerRole) writeEntries(entries []LogEntry) bool {
 	for _, logEntry := range entries {
-		_, err := f.raft.log.SerializeWrite(&logEntry)
+		_, err := f.raft.log.Write(logEntry.Serialize())
 
 		if err != nil {
 			return false
@@ -225,7 +229,13 @@ func (f *FollowerRole) applyToFiniteStateMachine() {
 	}
 
 	for idx := lastApplied + 1; idx <= commitIndex; idx++ {
-		logEntry, err := f.raft.log.ReadDeserialize(idx)
+		data, err := f.raft.log.Read(idx)
+
+		if err != nil {
+			break
+		}
+
+		logEntry, err := DeserializeLogEntry(data)
 
 		if err != nil {
 			break
@@ -256,7 +266,13 @@ func (f *FollowerRole) checkLogConsistency(index, term uint64) (bool, uint64, ui
 		return false, f.raft.snapshotIndex + 1, 0
 	}
 
-	logEntryAtIndex, err := f.raft.log.ReadDeserialize(index)
+	raw, err := f.raft.log.Read(index)
+
+	if err != nil {
+		return false, index, 0
+	}
+
+	logEntryAtIndex, err := DeserializeLogEntry(raw)
 
 	if err != nil || logEntryAtIndex == nil {
 		return false, index, 0
@@ -270,7 +286,13 @@ func (f *FollowerRole) checkLogConsistency(index, term uint64) (bool, uint64, ui
 	conflictIndex := index
 
 	for conflictIndex > 1 && conflictIndex > f.raft.snapshotIndex+1 {
-		logEntry, err := f.raft.log.ReadDeserialize(conflictIndex - 1)
+		rawPrev, err := f.raft.log.Read(conflictIndex - 1)
+
+		if err != nil {
+			break
+		}
+
+		logEntry, err := DeserializeLogEntry(rawPrev)
 
 		if err != nil || logEntry == nil || logEntry.Term != conflictTerm {
 			break

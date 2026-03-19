@@ -69,7 +69,7 @@ func (l *LeaderRole) OnEnter(term uint64) {
 		Term: term,
 	}
 
-	_, err := l.raft.log.SerializeWrite(&logEntry)
+	_, err := l.raft.log.Write(logEntry.Serialize())
 
 	if err != nil {
 		l.raft.becomeFollower(term)
@@ -178,7 +178,7 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 		Term: currentTerm,
 	}
 
-	index, err := l.raft.log.SerializeWriteCommit(&logEntry)
+	index, err := l.raft.log.WriteCommit(logEntry.Serialize())
 
 	if err != nil {
 		return nil, err
@@ -270,7 +270,13 @@ func (l *LeaderRole) applyToFiniteStateMachine() {
 	}
 
 	for idx := lastApplied + 1; idx <= commitIndex; idx++ {
-		logEntry, err := l.raft.log.ReadDeserialize(idx)
+		raw, err := l.raft.log.Read(idx)
+
+		if err != nil {
+			break
+		}
+
+		logEntry, err := DeserializeLogEntry(raw)
 
 		if err != nil {
 			break
@@ -330,7 +336,13 @@ func (l *LeaderRole) tryToAdvanceCommitIndex() {
 		return
 	}
 
-	logEntry, err := l.raft.log.ReadDeserialize(candidate)
+	raw, err := l.raft.log.Read(candidate)
+
+	if err != nil {
+		return
+	}
+
+	logEntry, err := DeserializeLogEntry(raw)
 
 	if err != nil {
 		return
@@ -393,10 +405,12 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 			if prevLogEntryIndex == l.raft.snapshotIndex {
 				prevLogEntryTerm = l.raft.snapshotTerm
 			} else {
-				logEntry, err := l.raft.log.ReadDeserialize(prevLogEntryIndex)
+				raw, err := l.raft.log.Read(prevLogEntryIndex)
 
 				if err == nil {
-					prevLogEntryTerm = logEntry.Term
+					if logEntry, err := DeserializeLogEntry(raw); err == nil {
+						prevLogEntryTerm = logEntry.Term
+					}
 				}
 			}
 		}
@@ -414,10 +428,15 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 			logEntries = make([]LogEntry, 0, to-next+1)
 
 			for i := next; i <= to; i++ {
-				logEntry, err := l.raft.log.ReadDeserialize(i)
+				raw, err := l.raft.log.Read(i)
 
 				if err == nil {
-					logEntries = append(logEntries, *logEntry)
+					logEntry, err := DeserializeLogEntry(raw)
+					if err == nil {
+						logEntries = append(logEntries, *logEntry)
+					} else {
+						break
+					}
 				} else {
 					break
 				}
@@ -534,10 +553,12 @@ func (l *LeaderRole) retrySendAppendEntriesToNode(node string, term uint64) {
 		if prevLogEntryIndex == l.raft.snapshotIndex {
 			prevLogEntryTerm = l.raft.snapshotTerm
 		} else {
-			logEntry, err := l.raft.log.ReadDeserialize(prevLogEntryIndex)
+			raw, err := l.raft.log.Read(prevLogEntryIndex)
 
 			if err == nil {
-				prevLogEntryTerm = logEntry.Term
+				if logEntry, err := DeserializeLogEntry(raw); err == nil {
+					prevLogEntryTerm = logEntry.Term
+				}
 			}
 		}
 	}
@@ -555,10 +576,15 @@ func (l *LeaderRole) retrySendAppendEntriesToNode(node string, term uint64) {
 		logEntries = make([]LogEntry, 0, to-next+1)
 
 		for i := next; i <= to; i++ {
-			logEntry, err := l.raft.log.ReadDeserialize(i)
+			raw, err := l.raft.log.Read(i)
 
 			if err == nil {
-				logEntries = append(logEntries, *logEntry)
+				logEntry, err := DeserializeLogEntry(raw)
+				if err == nil {
+					logEntries = append(logEntries, *logEntry)
+				} else {
+					break
+				}
 			} else {
 				break
 			}

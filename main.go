@@ -32,7 +32,7 @@ func main() {
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 
-	log := golog.NewLog[internal.LogEntry](*data, 64<<20)
+	log := golog.NewLog(*data, 64<<20)
 	err := log.Load()
 
 	if err != nil {
