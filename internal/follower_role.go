@@ -101,7 +101,7 @@ func (f *FollowerRole) HandlePreVote(term uint64, candidateId string, lastLogEnt
 		return currentTerm, false
 	}
 
-	if !IsEqualOrMoreRecent(f.raft.log, lastLogEntryIndex, lastLogEntryTerm) {
+	if !f.raft.isLogEqualOrMoreRecent(lastLogEntryIndex, lastLogEntryTerm) {
 		return currentTerm, false
 	}
 
@@ -125,7 +125,7 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 		return currentTerm, false
 	}
 
-	if !IsEqualOrMoreRecent(f.raft.log, lastLogEntryIndex, lastLogEntryTerm) {
+	if !f.raft.isLogEqualOrMoreRecent(lastLogEntryIndex, lastLogEntryTerm) {
 		return currentTerm, false
 	}
 
@@ -144,6 +144,32 @@ func (f *FollowerRole) HandlePropose(ctx context.Context, data []byte) (any, err
 	}
 
 	return f.raft.transport.Propose(leaderId, data)
+}
+
+func (f *FollowerRole) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) uint64 {
+	currentTerm := f.raft.store.GetCurrentTerm()
+
+	if term < currentTerm {
+		return currentTerm
+	}
+
+	if term > currentTerm {
+		f.raft.store.SetCurrentTermAndVotedFor(term, "")
+	}
+
+	f.resetElectionTimer()
+
+	f.raft.store.SetLeaderId(leaderId)
+
+	if lastIncludedIndex <= f.raft.snapshotIndex {
+		return currentTerm
+	}
+
+	if err := f.raft.installSnapshot(lastIncludedIndex, lastIncludedTerm, data); err != nil {
+		return currentTerm
+	}
+
+	return currentTerm
 }
 
 func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogEntry) {
@@ -216,6 +242,18 @@ func (f *FollowerRole) checkLogConsistency(index, term uint64) (bool, uint64, ui
 		return true, 0, 0
 	}
 
+	if index == f.raft.snapshotIndex {
+		if term == f.raft.snapshotTerm {
+			return true, 0, 0
+		}
+
+		return false, f.raft.snapshotIndex + 1, 0
+	}
+
+	if index < f.raft.snapshotIndex {
+		return false, f.raft.snapshotIndex + 1, 0
+	}
+
 	logEntryAtIndex, err := f.raft.log.ReadDeserialize(index)
 
 	if err != nil || logEntryAtIndex == nil {
@@ -229,7 +267,7 @@ func (f *FollowerRole) checkLogConsistency(index, term uint64) (bool, uint64, ui
 	conflictTerm := logEntryAtIndex.Term
 	conflictIndex := index
 
-	for conflictIndex > 1 {
+	for conflictIndex > 1 && conflictIndex > f.raft.snapshotIndex+1 {
 		logEntry, err := f.raft.log.ReadDeserialize(conflictIndex - 1)
 
 		if err != nil || logEntry == nil || logEntry.Term != conflictTerm {

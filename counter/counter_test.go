@@ -80,3 +80,45 @@ func BenchmarkIncrementParallel(b *testing.B) {
 		}
 	})
 }
+
+func TestSnapshotRestore(t *testing.T) {
+	counter := NewCounter()
+
+	counter.Increment("key_a", 1, 500)
+	counter.Increment("key_b", 1, 500)
+	counter.Increment("key_c", 1, 500)
+
+	if counter.value != 3 {
+		t.Fatalf("expected %v, got %v", 3, counter.value)
+	}
+
+	data, err := counter.Snapshot()
+
+	if err != nil {
+		t.Fatalf("snapshot failed: %v", err)
+	}
+
+	restored := NewCounter()
+
+	if err := restored.Restore(data); err != nil {
+		t.Fatalf("restore failed: %v", err)
+	}
+
+	if restored.value != 3 {
+		t.Fatalf("expected restored value %v, got %v", 3, restored.value)
+	}
+
+	// Deduplication should still work after restore
+	restored.Increment("key_a", 1, 500)
+
+	if restored.value != 3 {
+		t.Fatalf("expected deduplicated value %v, got %v", 3, restored.value)
+	}
+
+	// New keys should still increment
+	restored.Increment("key_d", 1, 500)
+
+	if restored.value != 4 {
+		t.Fatalf("expected value %v, got %v", 4, restored.value)
+	}
+}

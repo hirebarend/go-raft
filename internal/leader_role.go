@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sort"
 )
 
@@ -141,6 +142,18 @@ func (l *LeaderRole) HandlePreVote(term uint64, candidateId string, lastLogEntry
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	return currentTerm, false
+}
+
+func (l *LeaderRole) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) uint64 {
+	currentTerm := l.raft.store.GetCurrentTerm()
+
+	if term <= currentTerm {
+		return currentTerm
+	}
+
+	followerRole := l.raft.becomeFollower(term)
+
+	return followerRole.HandleInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, data)
 }
 
 func (l *LeaderRole) HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool) {
@@ -360,6 +373,12 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 			next = lastLogEntryIndex + 1
 		}
 
+		if l.raft.snapshotIndex > 0 && next <= l.raft.snapshotIndex {
+			go l.sendInstallSnapshotToNode(node, currentTerm, l.raft.id)
+
+			continue
+		}
+
 		var prevLogEntryIndex uint64
 
 		if next > 0 {
@@ -369,10 +388,14 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 		var prevLogEntryTerm uint64
 
 		if prevLogEntryIndex > 0 {
-			logEntry, err := l.raft.log.ReadDeserialize(prevLogEntryIndex)
+			if prevLogEntryIndex == l.raft.snapshotIndex {
+				prevLogEntryTerm = l.raft.snapshotTerm
+			} else {
+				logEntry, err := l.raft.log.ReadDeserialize(prevLogEntryIndex)
 
-			if err == nil {
-				prevLogEntryTerm = logEntry.Term
+				if err == nil {
+					prevLogEntryTerm = logEntry.Term
+				}
 			}
 		}
 
@@ -484,9 +507,15 @@ func (l *LeaderRole) retrySendAppendEntriesToNode(node string, term uint64) {
 
 	l.inflight[node] = true
 
-	lastLogEntryIndex, _ := l.raft.log.GetLastIndex()
-
 	next := l.nextIndex[node]
+
+	if l.raft.snapshotIndex > 0 && next <= l.raft.snapshotIndex {
+		go l.sendInstallSnapshotToNode(node, term, l.raft.id)
+
+		return
+	}
+
+	lastLogEntryIndex, _ := l.raft.log.GetLastIndex()
 
 	if next == 0 {
 		next = lastLogEntryIndex + 1
@@ -501,10 +530,14 @@ func (l *LeaderRole) retrySendAppendEntriesToNode(node string, term uint64) {
 	var prevLogEntryTerm uint64
 
 	if prevLogEntryIndex > 0 {
-		logEntry, err := l.raft.log.ReadDeserialize(prevLogEntryIndex)
+		if prevLogEntryIndex == l.raft.snapshotIndex {
+			prevLogEntryTerm = l.raft.snapshotTerm
+		} else {
+			logEntry, err := l.raft.log.ReadDeserialize(prevLogEntryIndex)
 
-		if err == nil {
-			prevLogEntryTerm = logEntry.Term
+			if err == nil {
+				prevLogEntryTerm = logEntry.Term
+			}
 		}
 	}
 
@@ -533,4 +566,45 @@ func (l *LeaderRole) retrySendAppendEntriesToNode(node string, term uint64) {
 	}
 
 	go l.sendAppendEntriesToNode(node, term, l.raft.GetLeaderId(), prevLogEntryIndex, prevLogEntryTerm, logEntries, l.raft.store.commitIndex.Load())
+}
+
+func (l *LeaderRole) sendInstallSnapshotToNode(node string, term uint64, leaderId string) {
+	snapshotPath := filepath.Join(l.raft.dataDir, "snapshot.data")
+
+	snapshot, err := LoadSnapshot(snapshotPath)
+
+	if err != nil {
+		l.raft.mu.Lock()
+		l.inflight[node] = false
+		l.raft.mu.Unlock()
+
+		return
+	}
+
+	t := l.raft.transport.InstallSnapshot(node, term, leaderId, snapshot.LastIncludedIndex, snapshot.LastIncludedTerm, snapshot.Data)
+
+	l.raft.mu.Lock()
+	defer l.raft.mu.Unlock()
+
+	l.inflight[node] = false
+
+	if t > l.raft.store.GetCurrentTerm() {
+		l.raft.becomeFollower(t)
+
+		return
+	}
+
+	if l.raft.role.GetType() != "leader" {
+		return
+	}
+
+	if l.matchIndex[node] < snapshot.LastIncludedIndex {
+		l.matchIndex[node] = snapshot.LastIncludedIndex
+	}
+
+	if l.nextIndex[node] < snapshot.LastIncludedIndex+1 {
+		l.nextIndex[node] = snapshot.LastIncludedIndex + 1
+	}
+
+	l.tryToAdvanceCommitIndex()
 }

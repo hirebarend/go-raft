@@ -82,7 +82,7 @@ func (c *CandidateRole) HandlePreVote(term uint64, candidateId string, lastLogEn
 		return currentTerm, false
 	}
 
-	if !IsEqualOrMoreRecent(c.raft.log, lastLogEntryIndex, lastLogEntryTerm) {
+	if !c.raft.isLogEqualOrMoreRecent(lastLogEntryIndex, lastLogEntryTerm) {
 		return currentTerm, false
 	}
 
@@ -111,6 +111,18 @@ func (c *CandidateRole) HandlePropose(ctx context.Context, data []byte) (any, er
 	return c.raft.transport.Propose(leaderId, data)
 }
 
+func (c *CandidateRole) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) uint64 {
+	currentTerm := c.raft.store.GetCurrentTerm()
+
+	if term < currentTerm {
+		return currentTerm
+	}
+
+	followerRole := c.raft.becomeFollower(term)
+
+	return followerRole.HandleInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, data)
+}
+
 func (c *CandidateRole) startPreElection() {
 	currentTerm := c.raft.store.GetCurrentTerm()
 
@@ -124,7 +136,7 @@ func (c *CandidateRole) startPreElection() {
 		return
 	}
 
-	lastLogEntryIndex, lastLogEntryTerm := GetLastLogEntryIndexAndTerm(c.raft.log)
+	lastLogEntryIndex, lastLogEntryTerm := c.raft.getLastLogEntryIndexAndTerm()
 
 	for _, node := range c.nodes {
 		if node == c.raft.id {
@@ -147,7 +159,7 @@ func (c *CandidateRole) startElection() {
 		return
 	}
 
-	lastLogEntryIndex, lastLogEntryTerm := GetLastLogEntryIndexAndTerm(c.raft.log)
+	lastLogEntryIndex, lastLogEntryTerm := c.raft.getLastLogEntryIndexAndTerm()
 
 	for _, node := range c.nodes {
 		if node == c.raft.id {
