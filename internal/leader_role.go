@@ -3,11 +3,12 @@ package internal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"runtime"
 	"sort"
 )
 
-const maxBatch = 2 * 1024
 
 type LeaderRole struct {
 	raft              *Raft
@@ -16,6 +17,8 @@ type LeaderRole struct {
 	heartbeatDeadline int
 	heartbeatTicks    int
 	inflight          map[string]bool
+	lastAckTicks      map[string]int // ticks since last successful ack per peer
+	leaderTicks       int            // total ticks since becoming leader
 	matchIndex        map[string]uint64
 	nextIndex         map[string]uint64
 	pending           map[uint64][]chan any
@@ -26,9 +29,11 @@ func NewLeaderRole(raft *Raft) *LeaderRole {
 		raft:              raft,
 		applierCh:         make(chan struct{}, 1),
 		applierStopCh:     make(chan struct{}),
-		heartbeatDeadline: 4,
+		heartbeatDeadline: raft.config.HeartbeatTicks,
 		heartbeatTicks:    0,
 		inflight:          make(map[string]bool),
+		lastAckTicks:      make(map[string]int),
+		leaderTicks:       0,
 		matchIndex:        make(map[string]uint64),
 		nextIndex:         make(map[string]uint64),
 		pending:           make(map[uint64][]chan any),
@@ -59,6 +64,7 @@ func (l *LeaderRole) OnEnter(term uint64) {
 
 		l.matchIndex[p] = 0
 		l.nextIndex[p] = lastLogEntryIndex + 1
+		l.lastAckTicks[p] = 0
 	}
 
 	l.matchIndex[l.raft.id] = lastLogEntryIndex
@@ -111,9 +117,29 @@ func (l *LeaderRole) OnExit() {
 
 func (l *LeaderRole) Tick() {
 	l.heartbeatTicks++
+	l.leaderTicks++
 
 	if l.heartbeatTicks >= l.heartbeatDeadline {
 		l.sendAppendEntriesToAllNodes()
+	}
+
+	// Check leader lease: step down if no majority ack within election timeout
+	if l.leaderTicks > l.raft.config.ElectionTimeoutMinTicks {
+		acked := 1 // count self
+		majority := len(l.raft.nodes)/2 + 1
+		for _, p := range l.raft.nodes {
+			if p == l.raft.id {
+				continue
+			}
+			if l.leaderTicks-l.lastAckTicks[p] < l.raft.config.ElectionTimeoutMinTicks {
+				acked++
+			}
+		}
+		if acked < majority {
+			fmt.Printf("[%v] leader lease expired — no majority ack, stepping down\n", l.raft.id)
+			l.raft.becomeFollower(l.raft.store.GetCurrentTerm())
+			return
+		}
 	}
 }
 
@@ -170,23 +196,56 @@ func (l *LeaderRole) HandleRequestVote(term uint64, candidateId string, lastLogE
 	return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 }
 
-func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error) {
+func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte, clientId string, sequenceNumber uint64, epoch uint64) (any, error) {
+	// Check for duplicate before acquiring lock (lock-free read)
+	if clientId != "" {
+		if isDup, cachedResult := l.raft.sessions.IsDuplicate(clientId, sequenceNumber); isDup {
+			return cachedResult, nil
+		}
+	}
+
+	l.raft.mu.Lock()
+
+	if l.raft.roleEpoch != epoch || l.raft.role.GetType() != "leader" {
+		l.raft.mu.Unlock()
+		return nil, errors.New("leader stepped down")
+	}
+
+	// Reject proposals if leader lease has expired
+	if l.leaderTicks > l.raft.config.ElectionTimeoutMinTicks {
+		acked := 1
+		majority := len(l.raft.nodes)/2 + 1
+		for _, p := range l.raft.nodes {
+			if p == l.raft.id {
+				continue
+			}
+			if l.leaderTicks-l.lastAckTicks[p] < l.raft.config.ElectionTimeoutMinTicks {
+				acked++
+			}
+		}
+		if acked < majority {
+			l.raft.mu.Unlock()
+			return nil, errors.New("leader lease expired")
+		}
+	}
+
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	logEntry := LogEntry{
-		Data: data,
-		Term: currentTerm,
+		Data:           data,
+		Term:           currentTerm,
+		ClientId:       clientId,
+		SequenceNumber: sequenceNumber,
 	}
 
 	index, err := l.raft.log.WriteCommit(logEntry.Serialize())
 
 	if err != nil {
+		l.raft.mu.Unlock()
 		return nil, err
 	}
 
 	ch := make(chan any, 1)
-
-	l.raft.mu.Lock()
 
 	l.pending[index] = append(l.pending[index], ch)
 
@@ -233,6 +292,16 @@ func (l *LeaderRole) HandlePropose(ctx context.Context, data []byte) (any, error
 }
 
 func (l *LeaderRole) applier() {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			fmt.Printf("[%v] PANIC in applier: %v\n%s\n", l.raft.id, r, buf[:n])
+			l.raft.mu.Lock()
+			l.raft.markUnhealthy()
+			l.raft.mu.Unlock()
+		}
+	}()
 	for {
 		select {
 		case <-l.applierCh:
@@ -285,7 +354,17 @@ func (l *LeaderRole) applyToFiniteStateMachine() {
 		var result any
 
 		if len(logEntry.Data) > 0 {
-			result = l.raft.fsm.Apply(logEntry.Data)
+			// Check dedup before applying
+			if logEntry.ClientId != "" {
+				if isDup, cached := l.raft.sessions.IsDuplicate(logEntry.ClientId, logEntry.SequenceNumber); isDup {
+					result = cached
+				} else {
+					result = l.raft.fsm.Apply(logEntry.Data)
+					l.raft.sessions.Record(logEntry.ClientId, logEntry.SequenceNumber, result)
+				}
+			} else {
+				result = l.raft.fsm.Apply(logEntry.Data)
+			}
 		}
 
 		l.raft.mu.Lock()
@@ -421,8 +500,8 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 			to := lastLogEntryIndex
 			count := to - next + 1
 
-			if count > maxBatch {
-				to = next + maxBatch - 1
+			if count > uint64(l.raft.config.MaxBatchEntries) {
+				to = next + uint64(l.raft.config.MaxBatchEntries) - 1
 			}
 
 			logEntries = make([]LogEntry, 0, to-next+1)
@@ -448,6 +527,16 @@ func (l *LeaderRole) sendAppendEntriesToAllNodes() {
 }
 
 func (l *LeaderRole) sendAppendEntriesToNode(node string, term uint64, leaderId string, prevLogEntryIndex uint64, prevLogEntryTerm uint64, logEntries []LogEntry, leaderCommitIndex uint64) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			fmt.Printf("[%v] PANIC in sendAppendEntriesToNode(%v): %v\n%s\n", l.raft.id, node, r, buf[:n])
+			l.raft.mu.Lock()
+			l.inflight[node] = false
+			l.raft.mu.Unlock()
+		}
+	}()
 	t, success, conflictIndex, conflictTerm := l.raft.transport.AppendEntries(node, term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
 
 	l.raft.mu.Lock()
@@ -470,6 +559,8 @@ func (l *LeaderRole) sendAppendEntriesToNode(node string, term uint64, leaderId 
 	needsRetry := false
 
 	if success {
+		l.lastAckTicks[node] = l.leaderTicks
+
 		lastSent := prevLogEntryIndex
 
 		if len(logEntries) > 0 {
@@ -569,8 +660,8 @@ func (l *LeaderRole) retrySendAppendEntriesToNode(node string, term uint64) {
 		to := lastLogEntryIndex
 		count := to - next + 1
 
-		if count > maxBatch {
-			to = next + maxBatch - 1
+		if count > uint64(l.raft.config.MaxBatchEntries) {
+			to = next + uint64(l.raft.config.MaxBatchEntries) - 1
 		}
 
 		logEntries = make([]LogEntry, 0, to-next+1)
@@ -595,6 +686,16 @@ func (l *LeaderRole) retrySendAppendEntriesToNode(node string, term uint64) {
 }
 
 func (l *LeaderRole) sendInstallSnapshotToNode(node string, term uint64, leaderId string) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			fmt.Printf("[%v] PANIC in sendInstallSnapshotToNode(%v): %v\n%s\n", l.raft.id, node, r, buf[:n])
+			l.raft.mu.Lock()
+			l.inflight[node] = false
+			l.raft.mu.Unlock()
+		}
+	}()
 	snapshotPath := filepath.Join(l.raft.dataDir, "snapshot.data")
 
 	snapshot, err := LoadSnapshot(snapshotPath)
@@ -623,6 +724,8 @@ func (l *LeaderRole) sendInstallSnapshotToNode(node string, term uint64, leaderI
 	if l.raft.role.GetType() != "leader" {
 		return
 	}
+
+	l.lastAckTicks[node] = l.leaderTicks
 
 	if l.matchIndex[node] < snapshot.LastIncludedIndex {
 		l.matchIndex[node] = snapshot.LastIncludedIndex

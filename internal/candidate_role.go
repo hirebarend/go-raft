@@ -3,6 +3,8 @@ package internal
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
 )
 
 type CandidateRole struct {
@@ -17,12 +19,9 @@ type CandidateRole struct {
 }
 
 func NewCandidateRole(raft *Raft) *CandidateRole {
-	electionTimeoutMin := 4 * 3
-	electionTimeoutMax := 4 * 5
-
 	return &CandidateRole{
 		raft:             raft,
-		electionDeadline: electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1),
+		electionDeadline: raft.config.ElectionTimeoutMinTicks + raft.rng.IntN(raft.config.ElectionTimeoutMaxTicks-raft.config.ElectionTimeoutMinTicks+1),
 		electionTicks:    0,
 		majority:         len(raft.nodes)/2 + 1,
 		nodes:            append([]string(nil), raft.nodes...),
@@ -78,7 +77,7 @@ func (c *CandidateRole) HandleAppendEntries(
 func (c *CandidateRole) HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool) {
 	currentTerm := c.raft.store.GetCurrentTerm()
 
-	if term <= currentTerm {
+	if term < currentTerm {
 		return currentTerm, false
 	}
 
@@ -101,7 +100,7 @@ func (c *CandidateRole) HandleRequestVote(term uint64, candidateId string, lastL
 	return followerRole.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 }
 
-func (c *CandidateRole) HandlePropose(ctx context.Context, data []byte) (any, error) {
+func (c *CandidateRole) HandlePropose(ctx context.Context, data []byte, clientId string, sequenceNumber uint64, epoch uint64) (any, error) {
 	leaderId := c.raft.GetLeaderId()
 
 	if leaderId == "" {
@@ -148,9 +147,18 @@ func (c *CandidateRole) startPreElection() {
 }
 
 func (c *CandidateRole) startElection() {
-	currentTerm := c.raft.store.IncrementCurrentTerm()
+	currentTerm, err := c.raft.store.IncrementCurrentTerm()
+	if err != nil {
+		fmt.Printf("[%v] FATAL: failed to persist term increment: %v\n", c.raft.id, err)
+		c.raft.markUnhealthy()
+		return
+	}
 
-	c.raft.store.SetVotedFor(c.raft.id)
+	if err := c.raft.store.SetVotedFor(c.raft.id); err != nil {
+		fmt.Printf("[%v] FATAL: failed to persist votedFor: %v\n", c.raft.id, err)
+		c.raft.markUnhealthy()
+		return
+	}
 	c.votes++
 
 	if c.votes >= c.majority {
@@ -171,6 +179,13 @@ func (c *CandidateRole) startElection() {
 }
 
 func (c *CandidateRole) sendPreVote(node string, term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			fmt.Printf("[%v] PANIC in sendPreVote(%v): %v\n%s\n", c.raft.id, node, r, buf[:n])
+		}
+	}()
 	t, granted := c.raft.transport.PreVote(node, term+1, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 
 	c.raft.mu.Lock()
@@ -202,6 +217,13 @@ func (c *CandidateRole) sendPreVote(node string, term uint64, candidateId string
 }
 
 func (c *CandidateRole) sendRequestVote(node string, term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			fmt.Printf("[%v] PANIC in sendRequestVote(%v): %v\n%s\n", c.raft.id, node, r, buf[:n])
+		}
+	}()
 	t, voteGranted := c.raft.transport.RequestVote(node, term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 
 	c.raft.mu.Lock()

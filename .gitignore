@@ -33,3 +33,9 @@ go.work.sum
 
 *.data
 *.seg
+
+# Terraform state and local benchmark artifacts
+infra/digitalocean/.terraform/
+infra/digitalocean/*.tfstate
+infra/digitalocean/*.tfstate.*
+benchmark-results/

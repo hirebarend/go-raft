@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 type FollowerRole struct {
@@ -12,12 +13,9 @@ type FollowerRole struct {
 }
 
 func NewFollowerRole(raft *Raft) *FollowerRole {
-	electionTimeoutMin := 4 * 3
-	electionTimeoutMax := 4 * 5
-
 	return &FollowerRole{
 		raft:             raft,
-		electionDeadline: electionTimeoutMin + raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1),
+		electionDeadline: raft.config.ElectionTimeoutMinTicks + raft.rng.IntN(raft.config.ElectionTimeoutMaxTicks-raft.config.ElectionTimeoutMinTicks+1),
 		electionTicks:    0,
 	}
 }
@@ -30,7 +28,11 @@ func (f *FollowerRole) OnEnter(term uint64) {
 	currentTerm := f.raft.store.GetCurrentTerm()
 
 	if term > currentTerm {
-		f.raft.store.SetCurrentTermAndVotedFor(term, "")
+		if err := f.raft.store.SetCurrentTermAndVotedFor(term, ""); err != nil {
+			fmt.Printf("[%v] FATAL: failed to persist term/votedFor: %v\n", f.raft.id, err)
+			f.raft.markUnhealthy()
+			return
+		}
 	}
 
 	f.raft.store.SetLeaderId("")
@@ -131,14 +133,18 @@ func (f *FollowerRole) HandleRequestVote(term uint64, candidateId string, lastLo
 		return currentTerm, false
 	}
 
-	f.raft.store.SetVotedFor(candidateId)
+	if err := f.raft.store.SetVotedFor(candidateId); err != nil {
+		fmt.Printf("[%v] FATAL: failed to persist votedFor: %v\n", f.raft.id, err)
+		f.raft.markUnhealthy()
+		return currentTerm, false
+	}
 
 	f.resetElectionTimer()
 
 	return currentTerm, true
 }
 
-func (f *FollowerRole) HandlePropose(ctx context.Context, data []byte) (any, error) {
+func (f *FollowerRole) HandlePropose(ctx context.Context, data []byte, clientId string, sequenceNumber uint64, epoch uint64) (any, error) {
 	leaderId := f.raft.GetLeaderId()
 
 	if leaderId == "" {
@@ -156,7 +162,11 @@ func (f *FollowerRole) HandleInstallSnapshot(term uint64, leaderId string, lastI
 	}
 
 	if term > currentTerm {
-		f.raft.store.SetCurrentTermAndVotedFor(term, "")
+		if err := f.raft.store.SetCurrentTermAndVotedFor(term, ""); err != nil {
+			fmt.Printf("[%v] FATAL: failed to persist term/votedFor: %v\n", f.raft.id, err)
+			f.raft.markUnhealthy()
+			return currentTerm
+		}
 	}
 
 	f.resetElectionTimer()
@@ -242,7 +252,14 @@ func (f *FollowerRole) applyToFiniteStateMachine() {
 		}
 
 		if len(logEntry.Data) > 0 {
-			f.raft.fsm.Apply(logEntry.Data)
+			if logEntry.ClientId != "" {
+				if isDup, _ := f.raft.sessions.IsDuplicate(logEntry.ClientId, logEntry.SequenceNumber); !isDup {
+					result := f.raft.fsm.Apply(logEntry.Data)
+					f.raft.sessions.Record(logEntry.ClientId, logEntry.SequenceNumber, result)
+				}
+			} else {
+				f.raft.fsm.Apply(logEntry.Data)
+			}
 		}
 
 		f.raft.store.lastApplied.Store(idx)
@@ -305,9 +322,6 @@ func (f *FollowerRole) checkLogConsistency(index, term uint64) (bool, uint64, ui
 }
 
 func (f *FollowerRole) resetElectionTimer() {
-	electionTimeoutMin := 4 * 3
-	electionTimeoutMax := 4 * 5
-
-	f.electionDeadline = electionTimeoutMin + f.raft.rng.IntN(electionTimeoutMax-electionTimeoutMin+1)
+	f.electionDeadline = f.raft.config.ElectionTimeoutMinTicks + f.raft.rng.IntN(f.raft.config.ElectionTimeoutMaxTicks-f.raft.config.ElectionTimeoutMinTicks+1)
 	f.electionTicks = 0
 }

@@ -51,26 +51,33 @@ func (s *Store) GetCurrentTerm() uint64 {
 	return s.currentTerm
 }
 
-func (s *Store) IncrementCurrentTerm() uint64 {
+func (s *Store) IncrementCurrentTerm() (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.currentTerm = s.currentTerm + 1
 
-	s.write()
+	if err := s.write(); err != nil {
+		s.currentTerm--
+		return s.currentTerm, fmt.Errorf("persist IncrementCurrentTerm: %w", err)
+	}
 
-	return s.currentTerm
+	return s.currentTerm, nil
 }
 
-func (s *Store) SetCurrentTerm(v uint64) uint64 {
+func (s *Store) SetCurrentTerm(v uint64) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	prev := s.currentTerm
 	s.currentTerm = v
 
-	s.write()
+	if err := s.write(); err != nil {
+		s.currentTerm = prev
+		return s.currentTerm, fmt.Errorf("persist SetCurrentTerm: %w", err)
+	}
 
-	return s.currentTerm
+	return s.currentTerm, nil
 }
 
 func (s *Store) GetLeaderId() string {
@@ -96,23 +103,38 @@ func (s *Store) GetVotedFor() string {
 	return s.votedFor
 }
 
-func (s *Store) SetVotedFor(votedFor string) {
+func (s *Store) SetVotedFor(votedFor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	prev := s.votedFor
 	s.votedFor = votedFor
 
-	s.write()
+	if err := s.write(); err != nil {
+		s.votedFor = prev
+		return fmt.Errorf("persist SetVotedFor: %w", err)
+	}
+
+	return nil
 }
 
-func (s *Store) SetCurrentTermAndVotedFor(term uint64, votedFor string) {
+func (s *Store) SetCurrentTermAndVotedFor(term uint64, votedFor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	prevTerm := s.currentTerm
+	prevVotedFor := s.votedFor
 
 	s.currentTerm = term
 	s.votedFor = votedFor
 
-	s.write()
+	if err := s.write(); err != nil {
+		s.currentTerm = prevTerm
+		s.votedFor = prevVotedFor
+		return fmt.Errorf("persist SetCurrentTermAndVotedFor: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Store) read() error {

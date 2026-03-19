@@ -36,44 +36,55 @@ type RaftRole interface {
 
 	HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool)
 
-	HandlePropose(ctx context.Context, data []byte) (any, error)
+	HandlePropose(ctx context.Context, data []byte, clientId string, sequenceNumber uint64, epoch uint64) (any, error)
 
 	Tick()
 }
 
 type Raft struct {
+	config        Config
 	dataDir       string
 	enabled       bool
-	fsm           *FSM
+	fsm           FSM
+	healthy       bool
 	id            string
 	log           *golog.Log
 	mu            *sync.Mutex
 	nodes         []string
 	rng           *rand.Rand
 	role          RaftRole
+	roleEpoch     uint64
 	snapshotIndex uint64
 	snapshotTerm  uint64
+	sessions      *SessionTable
 	store         *Store
 	transport     *Transport
+	shutdownCh    chan struct{}
+	shutdownOnce  sync.Once
 }
 
-func NewRaft(id string, dataDir string, nodes []string, log *golog.Log, store *Store, transport *Transport, fsm *FSM) *Raft {
+func NewRaft(id string, dataDir string, nodes []string, log *golog.Log, store *Store, transport *Transport, fsm FSM, config Config) *Raft {
 	seed := uint64(time.Now().UnixNano())
 
 	raft := Raft{
+		config:        config,
 		dataDir:       dataDir,
 		enabled:       true,
 		fsm:           fsm,
+		healthy:       true,
 		id:            id,
 		log:           log,
 		mu:            &sync.Mutex{},
 		nodes:         nodes,
 		rng:           rand.New(rand.NewPCG(seed, seed>>1)),
 		role:          nil,
+		roleEpoch:     0,
+		sessions:      NewSessionTable(),
 		snapshotIndex: 0,
 		snapshotTerm:  0,
 		store:         store,
 		transport:     transport,
+		shutdownCh:    make(chan struct{}),
 	}
 
 	snapshotPath := filepath.Join(dataDir, "snapshot.data")
@@ -116,7 +127,14 @@ func NewRaft(id string, dataDir string, nodes []string, log *golog.Log, store *S
 		}
 
 		if len(logEntry.Data) > 0 {
-			fsm.Apply(logEntry.Data)
+			if logEntry.ClientId != "" {
+				if isDup, _ := raft.sessions.IsDuplicate(logEntry.ClientId, logEntry.SequenceNumber); !isDup {
+					result := fsm.Apply(logEntry.Data)
+					raft.sessions.Record(logEntry.ClientId, logEntry.SequenceNumber, result)
+				}
+			} else {
+				fsm.Apply(logEntry.Data)
+			}
 		}
 
 		raft.store.lastApplied.Store(idx)
@@ -125,6 +143,15 @@ func NewRaft(id string, dataDir string, nodes []string, log *golog.Log, store *S
 	raft.becomeFollower(0)
 
 	return &raft
+}
+
+func (r *Raft) markUnhealthy() {
+	r.healthy = false
+	r.enabled = false
+	if r.role != nil {
+		r.role.OnExit()
+	}
+	fmt.Printf("[%v] node marked UNHEALTHY — refusing all RPCs until restart\n", r.id)
 }
 
 func (r *Raft) Disable() {
@@ -161,7 +188,7 @@ func (r *Raft) Tick() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if !r.enabled {
+	if !r.enabled || !r.healthy {
 		return
 	}
 
@@ -223,19 +250,19 @@ func (r *Raft) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedI
 	return r.role.HandleInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, data)
 }
 
-const snapshotThreshold uint64 = 1000
-
 func (r *Raft) TakeSnapshot() error {
+	// Phase 1: capture FSM state and metadata under lock (fast)
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	lastApplied := r.store.lastApplied.Load()
 
 	if lastApplied <= r.snapshotIndex {
+		r.mu.Unlock()
 		return nil
 	}
 
-	if lastApplied-r.snapshotIndex < snapshotThreshold {
+	if lastApplied-r.snapshotIndex < r.config.SnapshotThreshold {
+		r.mu.Unlock()
 		return nil
 	}
 
@@ -247,12 +274,14 @@ func (r *Raft) TakeSnapshot() error {
 		raw, err := r.log.Read(lastApplied)
 
 		if err != nil {
+			r.mu.Unlock()
 			return err
 		}
 
 		logEntry, err := DeserializeLogEntry(raw)
 
 		if err != nil {
+			r.mu.Unlock()
 			return err
 		}
 
@@ -262,9 +291,13 @@ func (r *Raft) TakeSnapshot() error {
 	data, err := r.fsm.Snapshot()
 
 	if err != nil {
+		r.mu.Unlock()
 		return err
 	}
 
+	r.mu.Unlock()
+
+	// Phase 2: write to disk outside the lock (slow, does not block RPCs)
 	snapshotPath := filepath.Join(r.dataDir, "snapshot.data")
 
 	snapshot := &Snapshot{
@@ -277,16 +310,23 @@ func (r *Raft) TakeSnapshot() error {
 		return err
 	}
 
-	r.snapshotIndex = snapshot.LastIncludedIndex
-	r.snapshotTerm = snapshot.LastIncludedTerm
+	// Phase 3: update in-memory state under lock
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	lastLogEntryIndex, _ := r.log.GetLastIndex()
+	// Only advance if no newer snapshot was installed while we were writing
+	if snapshot.LastIncludedIndex > r.snapshotIndex {
+		r.snapshotIndex = snapshot.LastIncludedIndex
+		r.snapshotTerm = snapshot.LastIncludedTerm
 
-	if lastLogEntryIndex > r.snapshotIndex {
-		r.log.TruncateTo(r.snapshotIndex)
+		lastLogEntryIndex, _ := r.log.GetLastIndex()
+
+		if lastLogEntryIndex > r.snapshotIndex {
+			r.log.TruncateTo(r.snapshotIndex)
+		}
+
+		fmt.Printf("[%v] snapshot taken at index %v term %v\n", r.id, r.snapshotIndex, r.snapshotTerm)
 	}
-
-	fmt.Printf("[%v] snapshot taken at index %v term %v\n", r.id, r.snapshotIndex, r.snapshotTerm)
 
 	return nil
 }
@@ -381,18 +421,23 @@ func (r *Raft) isLogEqualOrMoreRecent(index, term uint64) bool {
 }
 
 func (r *Raft) Propose(ctx context.Context, data []byte) (any, error) {
+	return r.ProposeWithSession(ctx, data, "", 0)
+}
+
+func (r *Raft) ProposeWithSession(ctx context.Context, data []byte, clientId string, sequenceNumber uint64) (any, error) {
 	r.mu.Lock()
 
-	if !r.enabled {
+	if !r.enabled || !r.healthy {
 		r.mu.Unlock()
 
-		return nil, errors.New("disabled (hard off)")
+		return nil, errors.New("node unavailable")
 	}
 
 	role := r.role
+	epoch := r.roleEpoch
 	r.mu.Unlock()
 
-	return role.HandlePropose(ctx, data)
+	return role.HandlePropose(ctx, data, clientId, sequenceNumber, epoch)
 }
 
 func (r *Raft) becomeCandidate() *CandidateRole {
@@ -402,6 +447,7 @@ func (r *Raft) becomeCandidate() *CandidateRole {
 		r.role.OnExit()
 	}
 
+	r.roleEpoch++
 	role := NewCandidateRole(r)
 
 	r.role = role
@@ -418,6 +464,7 @@ func (r *Raft) becomeFollower(term uint64) *FollowerRole {
 		r.role.OnExit()
 	}
 
+	r.roleEpoch++
 	role := NewFollowerRole(r)
 
 	r.role = role
@@ -434,6 +481,7 @@ func (r *Raft) becomeLeader(term uint64) *LeaderRole {
 		r.role.OnExit()
 	}
 
+	r.roleEpoch++
 	role := NewLeaderRole(r)
 
 	r.role = role
@@ -441,6 +489,33 @@ func (r *Raft) becomeLeader(term uint64) *LeaderRole {
 	r.role.OnEnter(term)
 
 	return role
+}
+
+func (r *Raft) Shutdown() {
+	r.shutdownOnce.Do(func() {
+		close(r.shutdownCh)
+	})
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.enabled {
+		return
+	}
+
+	r.enabled = false
+
+	if r.role != nil {
+		r.role.OnExit()
+	}
+
+	r.store.SetLeaderId("")
+
+	fmt.Printf("[%v] shutdown complete\n", r.id)
+}
+
+func (r *Raft) ShutdownCh() <-chan struct{} {
+	return r.shutdownCh
 }
 
 func (r *Raft) setCommitIndex(commitIndex uint64) {

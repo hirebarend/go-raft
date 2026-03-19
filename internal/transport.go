@@ -196,7 +196,7 @@ func (t *Transport) Propose(
 	}()
 
 	if response.StatusCode != http.StatusOK {
-		return nil, nil
+		return nil, fmt.Errorf("propose forwarding failed: status %d", response.StatusCode)
 	}
 
 	const maxBody = 1 << 20
@@ -404,19 +404,12 @@ func (t *Transport) InstallSnapshot(
 		return term
 	}
 
-	const maxBody = 1 << 20
-
-	reader := io.LimitReader(response.Body, maxBody)
-
+	// No size limit for snapshot responses — they can be large
 	var installSnapshotResponse InstallSnapshotResponse
 
-	decoder := json.NewDecoder(reader)
+	decoder := json.NewDecoder(response.Body)
 
 	if err := decoder.Decode(&installSnapshotResponse); err != nil {
-		return term
-	}
-
-	if decoder.More() {
 		return term
 	}
 

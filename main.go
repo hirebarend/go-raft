@@ -25,27 +25,39 @@ func main() {
 	}
 
 	data := flag.String("data", "data", "Path to the directory used for Raft's write-ahead log and persistent state.")
+	bindHost := flag.String("bind-host", "127.0.0.1", "Host/IP on which the HTTP server listens.")
 	nodes := flag.String("nodes", "127.0.0.1:8081,127.0.0.1:8082,127.0.0.1:8083", "Comma-separated list of cluster peer addresses (host:port).")
+	advertiseHost := flag.String("advertise-host", "", "Host/IP this node advertises to peers; defaults to bind-host.")
 	port := flag.Int("port", 8081, "Port number on which this Raft node will listen for client and peer requests.")
 
 	flag.Parse()
 
-	addr := fmt.Sprintf("127.0.0.1:%d", *port)
+	effectiveAdvertiseHost := strings.TrimSpace(*advertiseHost)
+
+	if effectiveAdvertiseHost == "" {
+		effectiveAdvertiseHost = *bindHost
+	}
+
+	bindAddr := fmt.Sprintf("%s:%d", *bindHost, *port)
+	advertiseAddr := fmt.Sprintf("%s:%d", effectiveAdvertiseHost, *port)
 
 	log := golog.NewLog(*data, 64<<20)
 	err := log.Load()
 
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "fatal: failed to load write-ahead log from %q: %v\n", *data, err)
+		os.Exit(1)
 	}
 
 	store, err := internal.NewStore(filepath.Join(*data, "store.data"))
 
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "fatal: failed to load persistent state from %q: %v\n", *data, err)
+		os.Exit(1)
 	}
 
-	raft := internal.NewRaft(addr, *data, strings.Split(*nodes, ","), log, store, internal.NewTransport(), internal.NewFSM())
+	config := internal.DefaultConfig()
+	raft := internal.NewRaft(advertiseAddr, *data, strings.Split(*nodes, ","), log, store, internal.NewTransport(), internal.NewFSM(), config)
 
 	r := gin.Default()
 
@@ -192,9 +204,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	srv := &http.Server{
+		Addr:    bindAddr,
+		Handler: r,
+	}
+
 	go func() {
-		if err := r.Run(addr); err != nil && err != http.ErrServerClosed {
-			// log.Fatalf("listen: %s\n", err)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "listen error: %v\n", err)
 		}
 	}()
 
@@ -227,6 +244,19 @@ func main() {
 	}()
 
 	<-ctx.Done()
+
+	fmt.Println("shutting down...")
+
+	// Step down and drain pending proposals
+	raft.Shutdown()
+
+	// Gracefully shut down HTTP server (wait up to 5s for in-flight requests)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "http server shutdown error: %v\n", err)
+	}
 
 	log.Close()
 }
