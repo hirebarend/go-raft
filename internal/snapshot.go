@@ -2,6 +2,7 @@ package internal
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -14,12 +15,14 @@ type Snapshot struct {
 	LastIncludedIndex uint64
 	LastIncludedTerm  uint64
 	Data              []byte
+	Configuration     []string // §7: cluster configuration as of last included index
 }
 
 const maxSnapshotSize = 256 << 20 // 256 MiB
 
-// Snapshot format version
+// Snapshot format versions
 const snapshotFormatV2 byte = 0x02
+const snapshotFormatV3 byte = 0x03
 
 func SaveSnapshot(name string, snapshot *Snapshot) error {
 	if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil && !errors.Is(err, os.ErrExist) {
@@ -35,7 +38,7 @@ func SaveSnapshot(name string, snapshot *Snapshot) error {
 	}
 
 	// Write format version byte
-	if _, err := f.Write([]byte{snapshotFormatV2}); err != nil {
+	if _, err := f.Write([]byte{snapshotFormatV3}); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("write version: %w", err)
 	}
@@ -52,7 +55,7 @@ func SaveSnapshot(name string, snapshot *Snapshot) error {
 		return fmt.Errorf("write lastIncludedTerm: %w", err)
 	}
 
-	// V2: uint64 data length
+	// uint64 data length + data
 	if err := binary.Write(f, binary.LittleEndian, uint64(len(snapshot.Data))); err != nil {
 		_ = f.Close()
 
@@ -65,8 +68,28 @@ func SaveSnapshot(name string, snapshot *Snapshot) error {
 		return fmt.Errorf("write data: %w", err)
 	}
 
-	// Write CRC32 of data
-	checksum := crc32.ChecksumIEEE(snapshot.Data)
+	// V3: write configuration
+	configData, err := json.Marshal(snapshot.Configuration)
+	if err != nil {
+		_ = f.Close()
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	if err := binary.Write(f, binary.LittleEndian, uint32(len(configData))); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write config len: %w", err)
+	}
+
+	if _, err := f.Write(configData); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	// CRC32 of data + config
+	crcData := make([]byte, len(snapshot.Data)+len(configData))
+	copy(crcData, snapshot.Data)
+	copy(crcData[len(snapshot.Data):], configData)
+	checksum := crc32.ChecksumIEEE(crcData)
 	if err := binary.Write(f, binary.LittleEndian, checksum); err != nil {
 		_ = f.Close()
 
@@ -110,6 +133,10 @@ func LoadSnapshot(name string) (*Snapshot, error) {
 	var firstByte [1]byte
 	if _, err := io.ReadFull(f, firstByte[:]); err != nil {
 		return nil, fmt.Errorf("read first byte: %w", err)
+	}
+
+	if firstByte[0] == snapshotFormatV3 {
+		return loadSnapshotV3(f)
 	}
 
 	if firstByte[0] == snapshotFormatV2 {
@@ -157,6 +184,80 @@ func loadSnapshotV1(f *os.File) (*Snapshot, error) {
 		LastIncludedIndex: lastIncludedIndex,
 		LastIncludedTerm:  lastIncludedTerm,
 		Data:              data,
+	}, nil
+}
+
+func loadSnapshotV3(f *os.File) (*Snapshot, error) {
+	var lastIncludedIndex uint64
+
+	if err := binary.Read(f, binary.LittleEndian, &lastIncludedIndex); err != nil {
+		return nil, fmt.Errorf("read lastIncludedIndex: %w", err)
+	}
+
+	var lastIncludedTerm uint64
+
+	if err := binary.Read(f, binary.LittleEndian, &lastIncludedTerm); err != nil {
+		return nil, fmt.Errorf("read lastIncludedTerm: %w", err)
+	}
+
+	var n uint64
+
+	if err := binary.Read(f, binary.LittleEndian, &n); err != nil {
+		return nil, fmt.Errorf("read data len: %w", err)
+	}
+
+	if n > maxSnapshotSize {
+		return nil, fmt.Errorf("snapshot data too large: %d", n)
+	}
+
+	data := make([]byte, n)
+
+	if _, err := io.ReadFull(f, data); err != nil {
+		return nil, fmt.Errorf("read data: %w", err)
+	}
+
+	// Read configuration
+	var configLen uint32
+
+	if err := binary.Read(f, binary.LittleEndian, &configLen); err != nil {
+		return nil, fmt.Errorf("read config len: %w", err)
+	}
+
+	if configLen > maxSnapshotSize {
+		return nil, fmt.Errorf("snapshot config too large: %d", configLen)
+	}
+
+	configData := make([]byte, configLen)
+
+	if _, err := io.ReadFull(f, configData); err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+
+	var configuration []string
+
+	if err := json.Unmarshal(configData, &configuration); err != nil {
+		return nil, fmt.Errorf("unmarshal config: %w", err)
+	}
+
+	// Verify CRC32 of data + config
+	var expectedCRC uint32
+	if err := binary.Read(f, binary.LittleEndian, &expectedCRC); err != nil {
+		return nil, fmt.Errorf("read crc: %w", err)
+	}
+
+	crcBuf := make([]byte, len(data)+len(configData))
+	copy(crcBuf, data)
+	copy(crcBuf[len(data):], configData)
+	actualCRC := crc32.ChecksumIEEE(crcBuf)
+	if expectedCRC != actualCRC {
+		return nil, fmt.Errorf("snapshot CRC mismatch: expected %08x, got %08x", expectedCRC, actualCRC)
+	}
+
+	return &Snapshot{
+		LastIncludedIndex: lastIncludedIndex,
+		LastIncludedTerm:  lastIncludedTerm,
+		Data:              data,
+		Configuration:     configuration,
 	}, nil
 }
 

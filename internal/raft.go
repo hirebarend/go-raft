@@ -311,6 +311,7 @@ func (r *Raft) TakeSnapshot() error {
 		LastIncludedIndex: lastApplied,
 		LastIncludedTerm:  snapshotTerm,
 		Data:              data,
+		Configuration:     append([]string(nil), r.nodes...),
 	}
 
 	if err := SaveSnapshot(snapshotPath, snapshot); err != nil {
@@ -345,6 +346,7 @@ func (r *Raft) installSnapshot(lastIncludedIndex uint64, lastIncludedTerm uint64
 		LastIncludedIndex: lastIncludedIndex,
 		LastIncludedTerm:  lastIncludedTerm,
 		Data:              data,
+		Configuration:     append([]string(nil), r.nodes...),
 	}
 
 	if err := SaveSnapshot(snapshotPath, snapshot); err != nil {

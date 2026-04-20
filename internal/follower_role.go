@@ -243,9 +243,11 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 				err := f.raft.log.TruncateFrom(idx)
 
 				if err == nil {
-					if f.writeEntries(logEntries[i:]) {
-						f.raft.log.Commit()
-					}
+					// §5.3, Figure 2 Rule 3-4: Always commit after truncation so the
+					// log stays consistent even if writeEntries partially fails. The
+					// leader will re-send any missing entries on the next AppendEntries.
+					f.writeEntries(logEntries[i:])
+					f.raft.log.Commit()
 				}
 
 				return
