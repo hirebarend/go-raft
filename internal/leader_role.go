@@ -70,6 +70,11 @@ func (l *LeaderRole) OnEnter(term uint64) {
 	l.matchIndex[l.raft.id] = lastLogEntryIndex
 	l.nextIndex[l.raft.id] = lastLogEntryIndex + 1
 
+	// §8, §5.4.2: Append a no-op entry for the new term. This allows the leader
+	// to advance the commit index once the no-op is replicated to a majority,
+	// which in turn commits any prior-term entries that have been replicated.
+	// Without this, the leader cannot commit entries from previous terms by
+	// replica count alone (§5.4.2 safety requirement).
 	logEntry := LogEntry{
 		Data: nil,
 		Term: term,
@@ -427,6 +432,11 @@ func (l *LeaderRole) tryToAdvanceCommitIndex() {
 		return
 	}
 
+	// §5.4.2: Only commit entries from the leader's current term. Entries from
+	// previous terms are committed indirectly once a current-term entry at a
+	// higher index is committed. This prevents the unsafe scenario where a
+	// leader commits a prior-term entry by replica count, only for that entry
+	// to be overwritten by a future leader.
 	if logEntry.Term != currentTerm {
 		return
 	}

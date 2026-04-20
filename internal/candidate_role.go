@@ -69,6 +69,8 @@ func (c *CandidateRole) HandleAppendEntries(
 		return currentTerm, false, 0, 0
 	}
 
+	// §5.2: If the leader's term is at least as large as the candidate's current
+	// term, the candidate recognizes the leader as legitimate and steps down.
 	followerRole := c.raft.becomeFollower(term)
 
 	return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
