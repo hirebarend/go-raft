@@ -86,10 +86,10 @@ func SaveSnapshot(name string, snapshot *Snapshot) error {
 	}
 
 	// CRC32 of data + config
-	crcData := make([]byte, len(snapshot.Data)+len(configData))
-	copy(crcData, snapshot.Data)
-	copy(crcData[len(snapshot.Data):], configData)
-	checksum := crc32.ChecksumIEEE(crcData)
+	h := crc32.NewIEEE()
+	h.Write(snapshot.Data)
+	h.Write(configData)
+	checksum := h.Sum32()
 	if err := binary.Write(f, binary.LittleEndian, checksum); err != nil {
 		_ = f.Close()
 
@@ -245,10 +245,10 @@ func loadSnapshotV3(f *os.File) (*Snapshot, error) {
 		return nil, fmt.Errorf("read crc: %w", err)
 	}
 
-	crcBuf := make([]byte, len(data)+len(configData))
-	copy(crcBuf, data)
-	copy(crcBuf[len(data):], configData)
-	actualCRC := crc32.ChecksumIEEE(crcBuf)
+	h := crc32.NewIEEE()
+	h.Write(data)
+	h.Write(configData)
+	actualCRC := h.Sum32()
 	if expectedCRC != actualCRC {
 		return nil, fmt.Errorf("snapshot CRC mismatch: expected %08x, got %08x", expectedCRC, actualCRC)
 	}
