@@ -30,7 +30,7 @@ type RaftRole interface {
 		leaderCommitIndex uint64,
 	) (uint64, bool, uint64, uint64)
 
-	HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) uint64
+	HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, offset uint64, data []byte, done bool) uint64
 
 	HandlePreVote(term uint64, candidateId string, lastLogEntryIndex, lastLogEntryTerm uint64) (uint64, bool)
 
@@ -41,26 +41,33 @@ type RaftRole interface {
 	Tick()
 }
 
+type pendingSnapshotState struct {
+	lastIncludedIndex uint64
+	lastIncludedTerm  uint64
+	data              []byte
+}
+
 type Raft struct {
-	config        Config
-	dataDir       string
-	enabled       bool
-	fsm           FSM
-	healthy       bool
-	id            string
-	log           *golog.Log
-	mu            *sync.Mutex
-	nodes         []string
-	rng           *rand.Rand
-	role          RaftRole
-	roleEpoch     uint64
-	snapshotIndex uint64
-	snapshotTerm  uint64
-	sessions      *SessionTable
-	store         *Store
-	transport     *Transport
-	shutdownCh    chan struct{}
-	shutdownOnce  sync.Once
+	config          Config
+	dataDir         string
+	enabled         bool
+	fsm             FSM
+	healthy         bool
+	id              string
+	log             *golog.Log
+	mu              *sync.Mutex
+	nodes           []string
+	pendingSnapshot *pendingSnapshotState
+	rng             *rand.Rand
+	role            RaftRole
+	roleEpoch       uint64
+	snapshotIndex   uint64
+	snapshotTerm    uint64
+	sessions        *SessionTable
+	store           *Store
+	transport       *Transport
+	shutdownCh      chan struct{}
+	shutdownOnce    sync.Once
 }
 
 func NewRaft(id string, dataDir string, nodes []string, log *golog.Log, store *Store, transport *Transport, fsm FSM, config Config) *Raft {
@@ -239,7 +246,7 @@ func (r *Raft) HandleRequestVote(term uint64, candidateId string, lastLogEntryIn
 	return r.role.HandleRequestVote(term, candidateId, lastLogEntryIndex, lastLogEntryTerm)
 }
 
-func (r *Raft) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) uint64 {
+func (r *Raft) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, offset uint64, data []byte, done bool) uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -247,7 +254,7 @@ func (r *Raft) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedI
 		return r.store.GetCurrentTerm()
 	}
 
-	return r.role.HandleInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, data)
+	return r.role.HandleInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, offset, data, done)
 }
 
 func (r *Raft) TakeSnapshot() error {

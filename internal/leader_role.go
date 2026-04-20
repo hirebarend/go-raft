@@ -172,7 +172,7 @@ func (l *LeaderRole) HandlePreVote(term uint64, candidateId string, lastLogEntry
 	return currentTerm, false
 }
 
-func (l *LeaderRole) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) uint64 {
+func (l *LeaderRole) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, offset uint64, data []byte, done bool) uint64 {
 	currentTerm := l.raft.store.GetCurrentTerm()
 
 	if term <= currentTerm {
@@ -181,7 +181,7 @@ func (l *LeaderRole) HandleInstallSnapshot(term uint64, leaderId string, lastInc
 
 	followerRole := l.raft.becomeFollower(term)
 
-	return followerRole.HandleInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, data)
+	return followerRole.HandleInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, offset, data, done)
 }
 
 func (l *LeaderRole) HandleRequestVote(term uint64, candidateId string, lastLogEntryIndex uint64, lastLogEntryTerm uint64) (uint64, bool) {
@@ -708,18 +708,51 @@ func (l *LeaderRole) sendInstallSnapshotToNode(node string, term uint64, leaderI
 		return
 	}
 
-	t := l.raft.transport.InstallSnapshot(node, term, leaderId, snapshot.LastIncludedIndex, snapshot.LastIncludedTerm, snapshot.Data)
+	chunkSize := int(l.raft.config.SnapshotChunkSize)
+	data := snapshot.Data
+	offset := 0
+
+	for {
+		end := offset + chunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+
+		chunk := data[offset:end]
+		isDone := end >= len(data)
+
+		t := l.raft.transport.InstallSnapshot(node, term, leaderId, snapshot.LastIncludedIndex, snapshot.LastIncludedTerm, uint64(offset), chunk, isDone)
+
+		l.raft.mu.Lock()
+
+		if t > l.raft.store.GetCurrentTerm() {
+			l.inflight[node] = false
+			l.raft.becomeFollower(t)
+			l.raft.mu.Unlock()
+
+			return
+		}
+
+		if l.raft.role.GetType() != "leader" {
+			l.inflight[node] = false
+			l.raft.mu.Unlock()
+
+			return
+		}
+
+		l.raft.mu.Unlock()
+
+		if isDone {
+			break
+		}
+
+		offset = end
+	}
 
 	l.raft.mu.Lock()
 	defer l.raft.mu.Unlock()
 
 	l.inflight[node] = false
-
-	if t > l.raft.store.GetCurrentTerm() {
-		l.raft.becomeFollower(t)
-
-		return
-	}
 
 	if l.raft.role.GetType() != "leader" {
 		return

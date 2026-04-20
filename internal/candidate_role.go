@@ -110,7 +110,7 @@ func (c *CandidateRole) HandlePropose(ctx context.Context, data []byte, clientId
 	return c.raft.transport.Propose(leaderId, data)
 }
 
-func (c *CandidateRole) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) uint64 {
+func (c *CandidateRole) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, offset uint64, data []byte, done bool) uint64 {
 	currentTerm := c.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
@@ -119,7 +119,7 @@ func (c *CandidateRole) HandleInstallSnapshot(term uint64, leaderId string, last
 
 	followerRole := c.raft.becomeFollower(term)
 
-	return followerRole.HandleInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, data)
+	return followerRole.HandleInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, offset, data, done)
 }
 
 func (c *CandidateRole) startPreElection() {

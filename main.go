@@ -153,7 +153,9 @@ func main() {
 			request.LeaderId,
 			request.LastIncludedIndex,
 			request.LastIncludedTerm,
+			request.Offset,
 			request.Data,
+			request.Done,
 		)
 
 		c.JSON(http.StatusOK, internal.InstallSnapshotResponse{

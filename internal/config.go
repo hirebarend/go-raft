@@ -26,6 +26,9 @@ type Config struct {
 
 	// MaxSnapshotSize is the maximum allowed snapshot size in bytes.
 	MaxSnapshotSize uint64
+
+	// SnapshotChunkSize is the maximum size in bytes of each InstallSnapshot RPC chunk.
+	SnapshotChunkSize uint64
 }
 
 func DefaultConfig() Config {
@@ -37,6 +40,7 @@ func DefaultConfig() Config {
 		MaxBatchEntries:         2048,
 		SnapshotThreshold:       1000,
 		MaxSnapshotSize:         256 << 20, // 256 MiB
+		SnapshotChunkSize:       1 << 20,   // 1 MiB
 	}
 }
 
@@ -64,6 +68,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxSnapshotSize == 0 {
 		return fmt.Errorf("MaxSnapshotSize must be positive")
+	}
+	if c.SnapshotChunkSize == 0 {
+		return fmt.Errorf("SnapshotChunkSize must be positive")
 	}
 	return nil
 }
