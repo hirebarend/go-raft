@@ -89,7 +89,15 @@ func (f *FollowerRole) HandleAppendEntries(
 
 	f.appendEntries(prevLogEntryIndex, logEntries)
 
-	f.raft.setCommitIndex(leaderCommitIndex)
+	// §5.3, Figure 2: set commitIndex = min(leaderCommit, index of last new entry)
+	lastNewEntryIndex := prevLogEntryIndex + uint64(len(logEntries))
+
+	commitIndex := leaderCommitIndex
+	if commitIndex > lastNewEntryIndex {
+		commitIndex = lastNewEntryIndex
+	}
+
+	f.raft.setCommitIndex(commitIndex)
 
 	f.applyToFiniteStateMachine()
 
@@ -154,7 +162,7 @@ func (f *FollowerRole) HandlePropose(ctx context.Context, data []byte, clientId 
 	return f.raft.transport.Propose(leaderId, data)
 }
 
-func (f *FollowerRole) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) uint64 {
+func (f *FollowerRole) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, offset uint64, data []byte, done bool) uint64 {
 	currentTerm := f.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
@@ -173,15 +181,51 @@ func (f *FollowerRole) HandleInstallSnapshot(term uint64, leaderId string, lastI
 
 	f.raft.store.SetLeaderId(leaderId)
 
+	// Start a new pending snapshot when offset is 0
+	if offset == 0 {
+		f.raft.pendingSnapshot = &pendingSnapshotState{
+			lastIncludedIndex: lastIncludedIndex,
+			lastIncludedTerm:  lastIncludedTerm,
+			data:              make([]byte, 0, len(data)),
+		}
+	}
+
+	// Validate we have a pending snapshot and the chunk matches
+	ps := f.raft.pendingSnapshot
+	if ps == nil {
+		return f.raft.store.GetCurrentTerm()
+	}
+
+	if ps.lastIncludedIndex != lastIncludedIndex || ps.lastIncludedTerm != lastIncludedTerm {
+		f.raft.pendingSnapshot = nil
+		return f.raft.store.GetCurrentTerm()
+	}
+
+	if uint64(len(ps.data)) != offset {
+		f.raft.pendingSnapshot = nil
+		return f.raft.store.GetCurrentTerm()
+	}
+
+	// Append chunk data
+	ps.data = append(ps.data, data...)
+
+	if !done {
+		return f.raft.store.GetCurrentTerm()
+	}
+
+	// All chunks received — install the snapshot
+	completeData := ps.data
+	f.raft.pendingSnapshot = nil
+
 	if lastIncludedIndex <= f.raft.snapshotIndex {
-		return currentTerm
+		return f.raft.store.GetCurrentTerm()
 	}
 
-	if err := f.raft.installSnapshot(lastIncludedIndex, lastIncludedTerm, data); err != nil {
-		return currentTerm
+	if err := f.raft.installSnapshot(lastIncludedIndex, lastIncludedTerm, completeData); err != nil {
+		return f.raft.store.GetCurrentTerm()
 	}
 
-	return currentTerm
+	return f.raft.store.GetCurrentTerm()
 }
 
 func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogEntry) {
@@ -199,9 +243,11 @@ func (f *FollowerRole) appendEntries(prevLogEntryIndex uint64, logEntries []LogE
 				err := f.raft.log.TruncateFrom(idx)
 
 				if err == nil {
-					if f.writeEntries(logEntries[i:]) {
-						f.raft.log.Commit()
-					}
+					// §5.3, Figure 2 Rule 3-4: Always commit after truncation so the
+					// log stays consistent even if writeEntries partially fails. The
+					// leader will re-send any missing entries on the next AppendEntries.
+					f.writeEntries(logEntries[i:])
+					f.raft.log.Commit()
 				}
 
 				return

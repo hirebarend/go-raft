@@ -131,7 +131,7 @@ func main() {
 		result, err := raft.Propose(c, body)
 
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "leader": raft.GetLeaderId()})
 
 			return
 		}
@@ -153,7 +153,9 @@ func main() {
 			request.LeaderId,
 			request.LastIncludedIndex,
 			request.LastIncludedTerm,
+			request.Offset,
 			request.Data,
+			request.Done,
 		)
 
 		c.JSON(http.StatusOK, internal.InstallSnapshotResponse{
@@ -181,7 +183,7 @@ func main() {
 		result, err := raft.Propose(c, []byte(uuid.New().String()))
 
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "leader": raft.GetLeaderId()})
 
 			return
 		}

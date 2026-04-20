@@ -69,6 +69,8 @@ func (c *CandidateRole) HandleAppendEntries(
 		return currentTerm, false, 0, 0
 	}
 
+	// §5.2: If the leader's term is at least as large as the candidate's current
+	// term, the candidate recognizes the leader as legitimate and steps down.
 	followerRole := c.raft.becomeFollower(term)
 
 	return followerRole.HandleAppendEntries(term, leaderId, prevLogEntryIndex, prevLogEntryTerm, logEntries, leaderCommitIndex)
@@ -110,7 +112,7 @@ func (c *CandidateRole) HandlePropose(ctx context.Context, data []byte, clientId
 	return c.raft.transport.Propose(leaderId, data)
 }
 
-func (c *CandidateRole) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) uint64 {
+func (c *CandidateRole) HandleInstallSnapshot(term uint64, leaderId string, lastIncludedIndex uint64, lastIncludedTerm uint64, offset uint64, data []byte, done bool) uint64 {
 	currentTerm := c.raft.store.GetCurrentTerm()
 
 	if term < currentTerm {
@@ -119,7 +121,7 @@ func (c *CandidateRole) HandleInstallSnapshot(term uint64, leaderId string, last
 
 	followerRole := c.raft.becomeFollower(term)
 
-	return followerRole.HandleInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, data)
+	return followerRole.HandleInstallSnapshot(term, leaderId, lastIncludedIndex, lastIncludedTerm, offset, data, done)
 }
 
 func (c *CandidateRole) startPreElection() {
@@ -147,18 +149,13 @@ func (c *CandidateRole) startPreElection() {
 }
 
 func (c *CandidateRole) startElection() {
-	currentTerm, err := c.raft.store.IncrementCurrentTerm()
+	currentTerm, err := c.raft.store.IncrementCurrentTermAndVotedFor(c.raft.id)
 	if err != nil {
-		fmt.Printf("[%v] FATAL: failed to persist term increment: %v\n", c.raft.id, err)
+		fmt.Printf("[%v] FATAL: failed to persist term/votedFor: %v\n", c.raft.id, err)
 		c.raft.markUnhealthy()
 		return
 	}
 
-	if err := c.raft.store.SetVotedFor(c.raft.id); err != nil {
-		fmt.Printf("[%v] FATAL: failed to persist votedFor: %v\n", c.raft.id, err)
-		c.raft.markUnhealthy()
-		return
-	}
 	c.votes++
 
 	if c.votes >= c.majority {

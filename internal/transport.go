@@ -60,7 +60,9 @@ type InstallSnapshotRequest struct {
 	LeaderId          string `json:"leader_id"`
 	LastIncludedIndex uint64 `json:"last_included_index"`
 	LastIncludedTerm  uint64 `json:"last_included_term"`
+	Offset            uint64 `json:"offset"`
 	Data              []byte `json:"data"`
+	Done              bool   `json:"done"`
 }
 
 type InstallSnapshotResponse struct {
@@ -360,14 +362,18 @@ func (t *Transport) InstallSnapshot(
 	leaderId string,
 	lastIncludedIndex uint64,
 	lastIncludedTerm uint64,
+	offset uint64,
 	data []byte,
+	done bool,
 ) uint64 {
 	installSnapshotRequest := InstallSnapshotRequest{
 		Term:              term,
 		LeaderId:          leaderId,
 		LastIncludedIndex: lastIncludedIndex,
 		LastIncludedTerm:  lastIncludedTerm,
+		Offset:            offset,
 		Data:              data,
+		Done:              done,
 	}
 
 	body, err := json.Marshal(installSnapshotRequest)
@@ -378,7 +384,7 @@ func (t *Transport) InstallSnapshot(
 
 	url := fmt.Sprintf("http://%s/rpc/install-snapshot", node)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))

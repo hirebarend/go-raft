@@ -14,6 +14,7 @@ func TestSaveLoadSnapshot(t *testing.T) {
 		LastIncludedIndex: 42,
 		LastIncludedTerm:  5,
 		Data:              []byte("hello snapshot"),
+		Configuration:     []string{"node1:8080", "node2:8080", "node3:8080"},
 	}
 
 	if err := SaveSnapshot(name, snapshot); err != nil {
@@ -37,6 +38,14 @@ func TestSaveLoadSnapshot(t *testing.T) {
 	if string(loaded.Data) != "hello snapshot" {
 		t.Fatalf("expected data 'hello snapshot', got '%v'", string(loaded.Data))
 	}
+
+	if len(loaded.Configuration) != 3 {
+		t.Fatalf("expected 3 configuration entries, got %v", len(loaded.Configuration))
+	}
+
+	if loaded.Configuration[0] != "node1:8080" || loaded.Configuration[1] != "node2:8080" || loaded.Configuration[2] != "node3:8080" {
+		t.Fatalf("unexpected configuration: %v", loaded.Configuration)
+	}
 }
 
 func TestLoadSnapshotNotFound(t *testing.T) {
@@ -55,6 +64,7 @@ func TestSaveSnapshotAtomic(t *testing.T) {
 		LastIncludedIndex: 10,
 		LastIncludedTerm:  1,
 		Data:              []byte("first"),
+		Configuration:     []string{"a:1", "b:2"},
 	}
 
 	if err := SaveSnapshot(name, snapshot1); err != nil {
@@ -65,6 +75,7 @@ func TestSaveSnapshotAtomic(t *testing.T) {
 		LastIncludedIndex: 20,
 		LastIncludedTerm:  2,
 		Data:              []byte("second"),
+		Configuration:     []string{"a:1", "b:2", "c:3"},
 	}
 
 	if err := SaveSnapshot(name, snapshot2); err != nil {
@@ -88,5 +99,34 @@ func TestSaveSnapshotAtomic(t *testing.T) {
 	// Temp file should be cleaned up
 	if _, err := os.Stat(name + ".tmp"); !os.IsNotExist(err) {
 		t.Fatal("expected tmp file to be cleaned up")
+	}
+}
+
+func TestSaveLoadSnapshotNilConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "snapshot.data")
+
+	snapshot := &Snapshot{
+		LastIncludedIndex: 10,
+		LastIncludedTerm:  1,
+		Data:              []byte("data"),
+	}
+
+	if err := SaveSnapshot(name, snapshot); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+
+	loaded, err := LoadSnapshot(name)
+
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+
+	if loaded.LastIncludedIndex != 10 {
+		t.Fatalf("expected LastIncludedIndex 10, got %v", loaded.LastIncludedIndex)
+	}
+
+	if loaded.Configuration != nil && len(loaded.Configuration) != 0 {
+		t.Fatalf("expected nil or empty configuration, got %v", loaded.Configuration)
 	}
 }
