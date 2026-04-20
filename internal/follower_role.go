@@ -89,7 +89,15 @@ func (f *FollowerRole) HandleAppendEntries(
 
 	f.appendEntries(prevLogEntryIndex, logEntries)
 
-	f.raft.setCommitIndex(leaderCommitIndex)
+	// §5.3, Figure 2: set commitIndex = min(leaderCommit, index of last new entry)
+	lastNewEntryIndex := prevLogEntryIndex + uint64(len(logEntries))
+
+	commitIndex := leaderCommitIndex
+	if commitIndex > lastNewEntryIndex {
+		commitIndex = lastNewEntryIndex
+	}
+
+	f.raft.setCommitIndex(commitIndex)
 
 	f.applyToFiniteStateMachine()
 
