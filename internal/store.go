@@ -118,6 +118,25 @@ func (s *Store) SetVotedFor(votedFor string) error {
 	return nil
 }
 
+func (s *Store) IncrementCurrentTermAndVotedFor(votedFor string) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prevTerm := s.currentTerm
+	prevVotedFor := s.votedFor
+
+	s.currentTerm = s.currentTerm + 1
+	s.votedFor = votedFor
+
+	if err := s.write(); err != nil {
+		s.currentTerm = prevTerm
+		s.votedFor = prevVotedFor
+		return s.currentTerm, fmt.Errorf("persist IncrementCurrentTermAndVotedFor: %w", err)
+	}
+
+	return s.currentTerm, nil
+}
+
 func (s *Store) SetCurrentTermAndVotedFor(term uint64, votedFor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

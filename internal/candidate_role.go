@@ -147,18 +147,13 @@ func (c *CandidateRole) startPreElection() {
 }
 
 func (c *CandidateRole) startElection() {
-	currentTerm, err := c.raft.store.IncrementCurrentTerm()
+	currentTerm, err := c.raft.store.IncrementCurrentTermAndVotedFor(c.raft.id)
 	if err != nil {
-		fmt.Printf("[%v] FATAL: failed to persist term increment: %v\n", c.raft.id, err)
+		fmt.Printf("[%v] FATAL: failed to persist term/votedFor: %v\n", c.raft.id, err)
 		c.raft.markUnhealthy()
 		return
 	}
 
-	if err := c.raft.store.SetVotedFor(c.raft.id); err != nil {
-		fmt.Printf("[%v] FATAL: failed to persist votedFor: %v\n", c.raft.id, err)
-		c.raft.markUnhealthy()
-		return
-	}
 	c.votes++
 
 	if c.votes >= c.majority {
